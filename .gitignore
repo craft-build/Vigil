@@ -1,0 +1,12 @@
+.zig-cache/
+zig-out/
+zig-pkg/
+.claude/
+
+# Build artifacts from scripts/build-ghostty.sh -- large and reproducible,
+# don't commit vendored build output.
+vendor/ghostty/.zig-cache/
+vendor/ghostty/zig-out/
+vendor/ghostty/zig-pkg/
+vendor/ghostty/macos/GhosttyKit.xcframework/
+vendor/ghostty/macos/build/
