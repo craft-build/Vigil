@@ -2,6 +2,7 @@
 //! bar, a terminal pane + log side-panel split, and a bottom status bar.
 //! Plain layer-backed NSViews + NSTextFields positioned by hand (no Auto
 //! Layout) -- simple, and matches the prototype's fixed-geometry chrome.
+const std = @import("std");
 const objc = @import("objc");
 const appkit = @import("../app/appkit.zig");
 const theme = @import("theme.zig");
@@ -20,14 +21,34 @@ pub const tab_bar_height: f64 = 38;
 pub const status_bar_height: f64 = 26;
 pub const log_pane_width: f64 = 260;
 
+// NSWindow's native close/minimize/zoom buttons still live at the leading
+// edge of the full-size titlebar. Leave their area clear of the tab pills.
+const window_controls_width: f64 = 78;
+var tab_bar_class: ?objc.Class = null;
+
+fn tabBarClass() objc.Class {
+    if (tab_bar_class) |cls| return cls;
+    const cls = objc.allocateClassPair(appkit.class("NSView"), "VigilTabBarView") orelse
+        @panic("failed to register VigilTabBarView");
+    std.debug.assert(cls.addMethod("mouseDownCanMoveWindow", mouseDownCanMoveWindow));
+    objc.registerClassPair(cls);
+    tab_bar_class = cls;
+    return cls;
+}
+
+fn mouseDownCanMoveWindow(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
+    return true;
+}
+
 /// Builds the top pill tab bar and adds it to `parent`. `width` is the
 /// parent's current width; the bar pins to the top edge and stretches with
 /// window width via autoresizing.
 pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) void {
-    const bar = appkit.panel(
+    const bar = tabBarClass().msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "initWithFrame:", .{
         appkit.rect(0, height - tab_bar_height, width, tab_bar_height),
-        .{ .background = theme.colors.bg_surface },
-    );
+    });
+    appkit.styleLayer(appkit.layerBacked(bar), .{ .background = theme.colors.bg_surface });
     setAutoresizing(bar, NSViewWidthSizable | NSViewMinYMargin);
     appkit.addSubview(parent, bar);
 
@@ -39,7 +60,7 @@ pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) void {
     // Pill group container that holds the session tabs.
     const group_h: f64 = 30;
     const group = appkit.panel(
-        appkit.rect(8, (tab_bar_height - group_h) / 2, 420, group_h),
+        appkit.rect(window_controls_width, (tab_bar_height - group_h) / 2, 420, group_h),
         .{ .background = theme.colors.bg_sunken, .corner_radius = theme.radius.pill },
     );
     appkit.addSubview(bar, group);

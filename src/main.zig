@@ -37,16 +37,20 @@ pub fn main() !void {
     const NSApp = appkit.class("NSApplication").msgSend(objc.Object, "sharedApplication", .{});
     NSApp.msgSend(void, "setActivationPolicy:", .{@as(i64, 0)}); // NSApplicationActivationPolicyRegular
 
-    const style_mask: u64 = 1 | 2 | 4 | 8; // Titled | Closable | Miniaturizable | Resizable
+    // Keep native window controls and resizing, but let our content occupy
+    // the titlebar so the tab bar is the visible window chrome.
+    const style_mask: u64 = 1 | 2 | 4 | 8 | (1 << 15); // Titled | Closable | Miniaturizable | Resizable | FullSizeContentView
     const window = appkit.class("NSWindow")
         .msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "initWithContentRect:styleMask:backing:defer:", .{
-            appkit.rect(0, 0, window_w, window_h),
-            style_mask,
-            @as(u64, 2), // NSBackingStoreBuffered
-            false,
-        });
+        appkit.rect(0, 0, window_w, window_h),
+        style_mask,
+        @as(u64, 2), // NSBackingStoreBuffered
+        false,
+    });
     window.msgSend(void, "setTitle:", .{appkit.nsString("Vigil")});
+    window.msgSend(void, "setTitleVisibility:", .{@as(i64, 1)}); // NSWindowTitleHidden
+    window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
     window.msgSend(void, "setBackgroundColor:", .{appkit.nsColor(theme.colors.bg_app)});
     window.msgSend(void, "center", .{});
 
