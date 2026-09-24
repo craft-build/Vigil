@@ -67,6 +67,7 @@ pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) void {
 
     const mono = appkit.font(theme.fonts.mono, theme.text_size.xs, true);
     const tabs = [_][:0]const u8{ "~/craft/apps/web", "~/craft/site", "scratch" };
+    const label_h: f64 = 18;
     var x: f64 = 3;
     for (tabs, 0..) |title, i| {
         const tab_w: f64 = if (i == 0) 150 else 110;
@@ -76,20 +77,15 @@ pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) void {
                 .{ .background = theme.colors.bg_surface_raised, .corner_radius = theme.radius.pill },
             );
             appkit.addSubview(group, pill);
-            appkit.addSubview(pill, appkit.label(
-                appkit.rect(12, 0, tab_w - 24, group_h - 6),
-                title,
-                mono,
-                theme.colors.text_primary,
-            ));
-        } else {
-            appkit.addSubview(group, appkit.label(
-                appkit.rect(x + 12, 0, tab_w - 24, group_h - 6),
-                title,
-                mono,
-                theme.colors.text_tertiary,
-            ));
         }
+        // All tab labels share the same frame in group coordinates; the
+        // selected pill is a background, not a separate text layout origin.
+        appkit.addSubview(group, appkit.label(
+            appkit.rect(x + 12, (group_h - label_h) / 2, tab_w - 24, label_h),
+            title,
+            mono,
+            if (i == 0) theme.colors.text_primary else theme.colors.text_tertiary,
+        ));
         x += tab_w;
     }
 
