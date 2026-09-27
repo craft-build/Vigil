@@ -5,11 +5,10 @@
 //! which never touches CALayer/CAMetalLayer itself. Our job is just: give it
 //! a view, and forward keyboard input + resize/focus notifications.
 //!
-//! Mouse handling, IME (marked text/preedit), and precise unshifted-codepoint
-//! computation are not implemented in this vertical slice -- see the roadmap
-//! in the project plan. Typed text (including Ctrl-chars) and non-text keys
-//! (arrows, enter, backspace, function keys) are forwarded, which is enough
-//! to drive a real interactive shell.
+//! IME (marked text/preedit) is not implemented yet -- see the roadmap in the
+//! project plan. Typed text (including Ctrl-chars), non-text keys (arrows,
+//! enter, backspace, function keys), mouse buttons/motion and scrolling are
+//! forwarded.
 const std = @import("std");
 const objc = @import("objc");
 const ghc = @import("../ghostty/c.zig").c;
@@ -52,7 +51,7 @@ pub const TerminalSurface = struct {
         cfg.platform_tag = ghc.GHOSTTY_PLATFORM_MACOS;
         cfg.platform = .{ .macos = .{ .nsview = view.value } };
         cfg.userdata = self;
-        cfg.scale_factor = 2.0; // TODO(roadmap): query the real backing scale factor.
+        cfg.scale_factor = backingScale(view);
         cfg.font_size = 13;
         cfg.context = ghc.GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
@@ -80,6 +79,19 @@ pub const TerminalSurface = struct {
         std.debug.assert(cls.addMethod("keyDown:", keyDown));
         std.debug.assert(cls.addMethod("keyUp:", keyUp));
         std.debug.assert(cls.addMethod("setFrameSize:", setFrameSize));
+        std.debug.assert(cls.addMethod("viewDidChangeBackingProperties", viewDidChangeBackingProperties));
+        std.debug.assert(cls.addMethod("updateTrackingAreas", updateTrackingAreas));
+        std.debug.assert(cls.addMethod("mouseDown:", mouseDown));
+        std.debug.assert(cls.addMethod("mouseUp:", mouseUp));
+        std.debug.assert(cls.addMethod("rightMouseDown:", rightMouseDown));
+        std.debug.assert(cls.addMethod("rightMouseUp:", rightMouseUp));
+        std.debug.assert(cls.addMethod("otherMouseDown:", otherMouseDown));
+        std.debug.assert(cls.addMethod("otherMouseUp:", otherMouseUp));
+        std.debug.assert(cls.addMethod("mouseMoved:", mouseMoved));
+        std.debug.assert(cls.addMethod("mouseDragged:", mouseMoved));
+        std.debug.assert(cls.addMethod("rightMouseDragged:", mouseMoved));
+        std.debug.assert(cls.addMethod("otherMouseDragged:", mouseMoved));
+        std.debug.assert(cls.addMethod("scrollWheel:", scrollWheel));
 
         objc.registerClassPair(cls);
         registered_class = cls;
@@ -98,20 +110,142 @@ pub const TerminalSurface = struct {
         return true;
     }
 
-    fn setFrameSize(id: objc.c.id, sel: objc.c.SEL, size: appkit.NSSize) callconv(.c) void {
-        const obj = objc.Object{ .value = id };
-        const super_cls = appkit.class("NSView");
-        obj.msgSendSuper(super_cls, void, objc.Sel{ .value = sel }, .{size});
+    /// The view's window scale when attached, else the main screen's --
+    /// covers creation time, before the view is in a window.
+    fn backingScale(view: objc.Object) f64 {
+        const window = view.msgSend(objc.Object, "window", .{});
+        if (window.value != null) return window.msgSend(f64, "backingScaleFactor", .{});
+        const screen = appkit.class("NSScreen").msgSend(objc.Object, "mainScreen", .{});
+        if (screen.value != null) return screen.msgSend(f64, "backingScaleFactor", .{});
+        return 2.0;
+    }
 
-        const self = selfOf(id);
-        // TODO(roadmap): use the view's real backingScaleFactor instead of
-        // the scale_factor assumption baked in at creation.
-        const scale: f64 = 2.0;
+    fn syncSize(self: *TerminalSurface) void {
+        const scale = backingScale(self.view);
+        const size = self.view.msgSend(appkit.NSRect, "bounds", .{}).size;
+        ghc.ghostty_surface_set_content_scale(self.surface, scale, scale);
         ghc.ghostty_surface_set_size(
             self.surface,
             @intFromFloat(size.width * scale),
             @intFromFloat(size.height * scale),
         );
+    }
+
+    fn setFrameSize(id: objc.c.id, sel: objc.c.SEL, size: appkit.NSSize) callconv(.c) void {
+        const obj = objc.Object{ .value = id };
+        const super_cls = appkit.class("NSView");
+        obj.msgSendSuper(super_cls, void, objc.Sel{ .value = sel }, .{size});
+        syncSize(selfOf(id));
+    }
+
+    fn viewDidChangeBackingProperties(id: objc.c.id, sel: objc.c.SEL) callconv(.c) void {
+        const obj = objc.Object{ .value = id };
+        obj.msgSendSuper(appkit.class("NSView"), void, objc.Sel{ .value = sel }, .{});
+        syncSize(selfOf(id));
+    }
+
+    /// One tracking area covering the visible rect so `mouseMoved:` fires
+    /// (needed for mouse-reporting apps and hover) without a button held.
+    fn updateTrackingAreas(id: objc.c.id, sel: objc.c.SEL) callconv(.c) void {
+        const obj = objc.Object{ .value = id };
+        obj.msgSendSuper(appkit.class("NSView"), void, objc.Sel{ .value = sel }, .{});
+
+        const existing = obj.msgSend(objc.Object, "trackingAreas", .{});
+        const count = existing.msgSend(u64, "count", .{});
+        var i: u64 = count;
+        while (i > 0) : (i -= 1) {
+            obj.msgSend(void, "removeTrackingArea:", .{
+                existing.msgSend(objc.Object, "objectAtIndex:", .{i - 1}),
+            });
+        }
+
+        const mouse_moved: u64 = 0x02;
+        const active_in_key_window: u64 = 0x20;
+        const in_visible_rect: u64 = 0x200;
+        const area = appkit.class("NSTrackingArea")
+            .msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "initWithRect:options:owner:userInfo:", .{
+            appkit.rect(0, 0, 0, 0),
+            mouse_moved | active_in_key_window | in_visible_rect,
+            obj,
+            @as(?*anyopaque, null),
+        });
+        obj.msgSend(void, "addTrackingArea:", .{area});
+        area.msgSend(void, "release", .{});
+    }
+
+    fn mouseButton(id: objc.c.id, event: objc.c.id, state: c_uint, button: c_uint) void {
+        const self = selfOf(id);
+        const ev = objc.Object{ .value = event };
+        const mods = ghosttyMods(ev.msgSend(u64, "modifierFlags", .{}));
+        // Update the position first so the click lands where the cursor is.
+        sendPos(self, ev);
+        _ = ghc.ghostty_surface_mouse_button(self.surface, state, button, mods);
+    }
+
+    fn mouseDown(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        mouseButton(id, event, ghc.GHOSTTY_MOUSE_PRESS, ghc.GHOSTTY_MOUSE_LEFT);
+    }
+    fn mouseUp(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        mouseButton(id, event, ghc.GHOSTTY_MOUSE_RELEASE, ghc.GHOSTTY_MOUSE_LEFT);
+    }
+    fn rightMouseDown(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        mouseButton(id, event, ghc.GHOSTTY_MOUSE_PRESS, ghc.GHOSTTY_MOUSE_RIGHT);
+    }
+    fn rightMouseUp(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        mouseButton(id, event, ghc.GHOSTTY_MOUSE_RELEASE, ghc.GHOSTTY_MOUSE_RIGHT);
+    }
+    fn otherMouseDown(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        mouseButton(id, event, ghc.GHOSTTY_MOUSE_PRESS, ghc.GHOSTTY_MOUSE_MIDDLE);
+    }
+    fn otherMouseUp(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        mouseButton(id, event, ghc.GHOSTTY_MOUSE_RELEASE, ghc.GHOSTTY_MOUSE_MIDDLE);
+    }
+
+    fn mouseMoved(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        sendPos(selfOf(id), .{ .value = event });
+    }
+
+    /// Ghostty wants view-local points with a top-left origin; AppKit's
+    /// origin is bottom-left.
+    fn sendPos(self: *TerminalSurface, event: objc.Object) void {
+        const window_pt = event.msgSend(appkit.NSPoint, "locationInWindow", .{});
+        const pt = self.view.msgSend(appkit.NSPoint, "convertPoint:fromView:", .{
+            window_pt, @as(?*anyopaque, null),
+        });
+        const height = self.view.msgSend(appkit.NSRect, "bounds", .{}).size.height;
+        const mods = ghosttyMods(event.msgSend(u64, "modifierFlags", .{}));
+        ghc.ghostty_surface_mouse_pos(self.surface, pt.x, height - pt.y, mods);
+    }
+
+    fn scrollWheel(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+        _ = sel;
+        const self = selfOf(id);
+        const ev = objc.Object{ .value = event };
+
+        var x = ev.msgSend(f64, "scrollingDeltaX", .{});
+        var y = ev.msgSend(f64, "scrollingDeltaY", .{});
+        const precise = ev.msgSend(bool, "hasPreciseScrollingDeltas", .{});
+        if (precise) {
+            // Same 2x feel multiplier as Ghostty's own macOS app.
+            x *= 2;
+            y *= 2;
+        }
+
+        // ghostty_input_scroll_mods_t: bit 0 = precision, bits 1-3 = momentum.
+        // NSEventPhase is a one-hot bitmask; ghostty's momentum enum is the
+        // 1-based index of that bit (began=1 .. mayBegin=6).
+        const phase = ev.msgSend(u64, "momentumPhase", .{});
+        const momentum: c_int = if (phase == 0) 0 else @as(c_int, @intCast(@ctz(phase))) + 1;
+        const scroll_mods: c_int = @intFromBool(precise) | (momentum << 1);
+        ghc.ghostty_surface_mouse_scroll(self.surface, x, y, scroll_mods);
     }
 
     fn keyDown(id: objc.c.id, sel: objc.c.SEL, event: objc.c.id) callconv(.c) void {

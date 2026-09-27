@@ -42,21 +42,15 @@ Tracked as `TODO(roadmap)` comments in the source; listed here with more context
   unhandled. Needs to route `new_tab`, `close_tab`, `set_title`, `bell`, `toggle_fullscreen`, etc.
   into Vigil's own window/tab-bar state — this is the actual wiring needed before tabs/splits (see
   below) can work, since libghostty drives those via actions, not direct calls.
-- **Clipboard** (`read_clipboard_cb` / `write_clipboard_cb` in `runtime.zig`): stubbed
-  (`GHOSTTY_CLIPBOARD_READ_UNAVAILABLE`, no-op write). Needs `NSPasteboard` bridging — copy/paste
-  in the terminal doesn't work at all right now.
-- **`close_surface_cb`**: no-op. Once there's more than one surface (tabs/splits), this needs to
-  actually close the right pane/tab.
-- **Backing scale factor** (`TerminalSurface.zig`, both at creation and in `setFrameSize:`):
-  hardcoded to `2.0` (typical Retina). Should query the view's/window's real
-  `backingScaleFactor` — wrong on non-Retina displays or when dragged between displays with
-  different scales.
-- **Keyboard input precision** (`TerminalSurface.handleKey`): `unshifted_codepoint` is always 0
-  instead of being computed via `charactersByApplyingModifiers:` with no modifiers. This mostly
-  matters for keybinding matching (so shortcuts fire regardless of shift state) — plain typing
-  already works. Also no IME/marked-text support (`ghostty_surface_preedit` is never called), and
-  no mouse handling at all (selection, scroll, clicks) — `mouseDown:`/`mouseUp:`/`scrollWheel:`
-  aren't overridden on `VigilTerminalView`.
+- **Clipboard**: done (`src/app/clipboard.zig`). Plain-text copy/paste via `NSPasteboard`;
+  program-initiated access (OSC 52 / kitty) is denied until there's a confirmation prompt UI.
+- **`close_surface_cb`**: currently terminates the app (single surface). Once there's more than
+  one surface (tabs/splits), this needs to actually close the right pane/tab.
+- **Backing scale factor**: done — read from the window/screen at creation, and re-synced on
+  resize and `viewDidChangeBackingProperties` (display changes).
+- **Keyboard/mouse input**: `unshifted_codepoint`, mouse buttons/motion (with a tracking area),
+  and scrolling (precision + momentum) are done. Still missing: IME/marked-text support
+  (`ghostty_surface_preedit` is never called) and mouse pressure/force-touch.
 - **Multiple surfaces**: only one `ghostty_surface_t` ever exists. Real tabs (the tab bar is
   currently static labels, not functional) and splits (`ghostty_surface_split`) need a
   `TerminalSurface` per pane and a window/tab-bar model that tracks them, wired through the

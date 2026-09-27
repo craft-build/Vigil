@@ -4,7 +4,11 @@
 //! on macos/Sources/Ghostty/Ghostty.App.swift's `wakeup`/`action` wiring,
 //! reimplemented against the C API instead of Swift.
 const std = @import("std");
+const objc = @import("objc");
 const c = @import("c.zig").c;
+const appkit = @import("../app/appkit.zig");
+const clipboard = @import("../app/clipboard.zig");
+const TerminalSurface = @import("../app/TerminalSurface.zig").TerminalSurface;
 
 extern "c" var _dispatch_main_q: anyopaque;
 extern "c" fn dispatch_async_f(
@@ -76,26 +80,54 @@ pub const App = struct {
         mimes_len: usize,
         immediate: bool,
     ) callconv(.c) c.ghostty_clipboard_read_result_e {
-        _ = userdata;
-        _ = location;
-        _ = state;
         _ = mimes;
         _ = mimes_len;
         _ = immediate;
-        // TODO(roadmap): bridge to NSPasteboard.
-        return c.GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
+        if (location != c.GHOSTTY_CLIPBOARD_STANDARD) return c.GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
+        const surface = surfaceOf(userdata) orelse return c.GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
+        const text = clipboard.readText() orelse return c.GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
+
+        const content = c.ghostty_clipboard_content_s{
+            .mime = "text/plain",
+            .data = text,
+            .len = std.mem.len(text),
+        };
+        const complete = c.ghostty_clipboard_complete_s{
+            .contents = &content,
+            .contents_len = 1,
+            .available = null,
+            .available_len = 0,
+            .confirmed = false,
+            .remember = false,
+        };
+        c.ghostty_surface_complete_clipboard_request(surface, &complete, state);
+        return c.GHOSTTY_CLIPBOARD_READ_STARTED;
     }
 
+    /// libghostty asks for confirmation on unsafe pastes and on OSC 52 /
+    /// kitty clipboard access. Plain pastes are user-initiated, so approve
+    /// them; deny program-initiated clipboard access until there is a
+    /// prompt UI for it.
     fn confirmReadClipboard(
         userdata: ?*anyopaque,
         confirm: [*c]const c.ghostty_clipboard_confirm_s,
         state: ?*anyopaque,
         request: c.ghostty_clipboard_request_e,
     ) callconv(.c) void {
-        _ = userdata;
-        _ = confirm;
-        _ = state;
-        _ = request;
+        const surface = surfaceOf(userdata) orelse return;
+        if (request != c.GHOSTTY_CLIPBOARD_REQUEST_PASTE or confirm == null) {
+            c.ghostty_surface_deny_clipboard_request(surface, state);
+            return;
+        }
+        const complete = c.ghostty_clipboard_complete_s{
+            .contents = confirm.*.contents,
+            .contents_len = confirm.*.contents_len,
+            .available = confirm.*.available,
+            .available_len = confirm.*.available_len,
+            .confirmed = true,
+            .remember = false,
+        };
+        c.ghostty_surface_complete_clipboard_request(surface, &complete, state);
     }
 
     fn writeClipboard(
@@ -106,16 +138,30 @@ pub const App = struct {
         confirm: bool,
     ) callconv(.c) void {
         _ = userdata;
-        _ = location;
-        _ = content;
-        _ = content_len;
         _ = confirm;
-        // TODO(roadmap): bridge to NSPasteboard.
+        if (location != c.GHOSTTY_CLIPBOARD_STANDARD or content == null) return;
+        for (content[0..content_len]) |item| {
+            const mime = std.mem.span(item.mime orelse continue);
+            if (!std.mem.eql(u8, mime, "text/plain")) continue;
+            if (item.data == null) continue;
+            clipboard.writeText(item.data[0..item.len]);
+            return;
+        }
     }
 
+    // TODO(roadmap): with more than one surface, close just the owning
+    // pane/tab. With a single surface, its shell exiting ends the app.
     fn closeSurface(userdata: ?*anyopaque, process_alive: bool) callconv(.c) void {
         _ = userdata;
         _ = process_alive;
-        // TODO(roadmap): close the owning window/tab once we have >1 surface.
+        const app = appkit.class("NSApplication").msgSend(objc.Object, "sharedApplication", .{});
+        app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
+    }
+
+    /// Surface-scoped callbacks receive the `userdata` set on the surface
+    /// config, which is our `*TerminalSurface`.
+    fn surfaceOf(userdata: ?*anyopaque) ?c.ghostty_surface_t {
+        const ts: *TerminalSurface = @ptrCast(@alignCast(userdata orelse return null));
+        return ts.surface;
     }
 };
