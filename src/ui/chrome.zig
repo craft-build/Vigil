@@ -11,14 +11,12 @@ const clickable = @import("clickable.zig");
 const NSViewMinXMargin: u64 = 1;
 const NSViewWidthSizable: u64 = 2;
 const NSViewMinYMargin: u64 = 8;
-const NSViewMaxYMargin: u64 = 32;
 
 fn setAutoresizing(view: objc.Object, mask: u64) void {
     view.msgSend(void, "setAutoresizingMask:", .{mask});
 }
 
 pub const tab_bar_height: f64 = 38;
-pub const status_bar_height: f64 = 26;
 
 // NSWindow's native close/minimize/zoom buttons still live at the leading
 // edge of the full-size titlebar. Leave their area clear of the tab pills.
@@ -231,52 +229,4 @@ pub fn populateTabs(bar: TabBar, titles: []const [:0]const u8, active: usize) vo
     layer.msgSend(void, "setMasksToBounds:", .{true});
 }
 
-/// Builds the bottom status bar and adds it to `parent`, pinned to the
-/// bottom edge.
-pub fn buildStatusBar(parent: objc.Object, width: f64) void {
-    const bar = appkit.panel(
-        appkit.rect(0, 0, width, status_bar_height),
-        .{ .background = theme.colors.bg_surface },
-    );
-    setAutoresizing(bar, NSViewWidthSizable | NSViewMaxYMargin);
-    appkit.addSubview(parent, bar);
-
-    const border = appkit.panel(
-        appkit.rect(0, status_bar_height - 1, width, 1),
-        .{ .background = theme.colors.border_subtle },
-    );
-    setAutoresizing(border, NSViewWidthSizable);
-    appkit.addSubview(bar, border);
-
-    const mono = appkit.font(theme.fonts.mono, 11, true);
-    appkit.addSubview(bar, appkit.label(
-        appkit.rect(12, 4, 220, 18),
-        "\u{e0a0} feat/pane-resize \u{00b7} ~/craft/apps/web",
-        mono,
-        theme.colors.text_tertiary,
-    ));
-
-    const pill_w: f64 = 64;
-    const pill = appkit.panel(
-        appkit.rect(width - pill_w - 120, 4, pill_w, 18),
-        .{ .background = theme.colors.bg_surface_raised, .corner_radius = theme.radius.pill },
-    );
-    setAutoresizing(pill, NSViewMinXMargin);
-    appkit.addSubview(bar, pill);
-    appkit.addSubview(pill, appkit.label(
-        appkit.rect(0, 0, pill_w, 18),
-        "\u{25cf} running",
-        appkit.font(theme.fonts.mono, 10, true),
-        theme.colors.green_500,
-    ));
-
-    const trailing = appkit.label(
-        appkit.rect(width - 110, 4, 100, 18),
-        "zsh \u{00b7} 128\u{00d7}34",
-        mono,
-        theme.colors.text_tertiary,
-    );
-    setAutoresizing(trailing, NSViewMinXMargin);
-    appkit.addSubview(bar, trailing);
-}
 

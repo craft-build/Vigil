@@ -72,7 +72,6 @@ pub const Window = struct {
 
         const content = window.msgSend(objc.Object, "contentView", .{});
         const tab_bar = chrome.buildTabBar(content, window_w, window_h);
-        chrome.buildStatusBar(content, window_w);
 
         self.* = .{
             .allocator = allocator,
@@ -107,14 +106,14 @@ pub const Window = struct {
         const bounds = self.content.msgSend(appkit.NSRect, "bounds", .{});
         const frame = appkit.rect(
             0,
-            chrome.status_bar_height,
+            0,
             bounds.size.width,
-            bounds.size.height - chrome.tab_bar_height - chrome.status_bar_height,
+            bounds.size.height - chrome.tab_bar_height,
         );
         const surface = try TerminalSurface.create(self.allocator, self.app, frame, inherit);
         errdefer surface.destroy(self.allocator);
         surface.view.msgSend(void, "setAutoresizingMask:", .{@as(u64, 2 | 16)}); // WidthSizable | HeightSizable
-        // Below the tab bar / status bar / log pane so chrome stays on top.
+        // Below the tab bar so chrome stays on top.
         self.content.msgSend(void, "addSubview:positioned:relativeTo:", .{
             surface.view,
             @as(i64, -1), // NSWindowBelow
