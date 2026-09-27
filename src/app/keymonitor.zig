@@ -3,6 +3,7 @@
 //! before they reach the first responder, so Vigil's own shortcuts (⌘/, and
 //! later ⌘K) work no matter what has focus, without routing through the
 //! terminal view's `keyDown:`.
+const std = @import("std");
 const objc = @import("objc");
 const appkit = @import("appkit.zig");
 
@@ -54,3 +55,22 @@ pub fn modifiers(event: objc.Object) Modifiers {
 pub fn keyCode(event: objc.Object) u16 {
     return event.msgSend(u16, "keyCode", .{});
 }
+
+/// True when ⌘ or ⌃ is held -- i.e. a shortcut rather than text entry.
+pub fn isShortcut(event: objc.Object) bool {
+    const flags = event.msgSend(u64, "modifierFlags", .{}) & device_independent_mask;
+    return flags & (flag_command | flag_control) != 0;
+}
+
+/// The event's typed text as UTF-8 (empty for pure modifier/function keys).
+pub fn characters(event: objc.Object) []const u8 {
+    const chars = event.msgSend(objc.Object, "characters", .{});
+    if (chars.value == null) return &.{};
+    return std.mem.sliceTo(chars.msgSend([*:0]const u8, "UTF8String", .{}), 0);
+}
+
+pub const key_return: u16 = 36;
+pub const key_keypad_enter: u16 = 76;
+pub const key_backspace: u16 = 51;
+pub const key_up: u16 = 126;
+pub const key_down: u16 = 125;

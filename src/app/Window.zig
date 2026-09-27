@@ -13,6 +13,8 @@ const TerminalSurface = @import("TerminalSurface.zig").TerminalSurface;
 const chrome = @import("../ui/chrome.zig");
 const theme = @import("../ui/theme.zig");
 const shortcuts_sheet = @import("../ui/shortcuts_sheet.zig");
+const palette = @import("../ui/palette.zig");
+const keybindings = @import("keybindings.zig");
 const keymonitor = @import("keymonitor.zig");
 
 extern "c" var _dispatch_main_q: anyopaque;
@@ -86,6 +88,7 @@ pub const Window = struct {
         instance = self;
         chrome.on_tab_click = onTabClick;
         keymonitor.install(onKeyEvent);
+        palette.on_run = runCommand;
 
         try self.newTab(null);
         return self;
@@ -199,9 +202,11 @@ pub const Window = struct {
         const code = keymonitor.keyCode(event);
 
         if (mods == .command and code == keymonitor.key_slash) {
+            palette.hide();
             shortcuts_sheet.toggle(self.content);
             return true;
         }
+        if (palette.isVisible()) return palette.handleKey(event);
         if (!shortcuts_sheet.isVisible()) return false;
         if (mods == .none and code == keymonitor.key_escape) {
             shortcuts_sheet.hide();
@@ -209,6 +214,17 @@ pub const Window = struct {
         }
         // Let other ⌘ shortcuts (quit, new tab, ...) through.
         return mods != .command;
+    }
+
+    /// Runs a palette-chosen command: Vigil's own, or a libghostty binding
+    /// action fired at the active surface.
+    fn runCommand(cmd: keybindings.Command) void {
+        const self = instance orelse return;
+        if (cmd.vigil) |action| switch (action) {
+            .show_shortcuts => shortcuts_sheet.show(self.content),
+        } else {
+            _ = keybindings.perform(self.tabs.items[self.active].surface.surface, cmd);
+        }
     }
 
     // -- libghostty action routing ---------------------------------------
@@ -253,6 +269,11 @@ pub const Window = struct {
                 const ts = target_surface orelse return false;
                 const title = act.action.set_title.title orelse return false;
                 self.setTitle(ts, std.mem.span(title));
+                return true;
+            },
+            ghc.GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE => {
+                if (shortcuts_sheet.isVisible()) return true;
+                palette.toggle(self.content);
                 return true;
             },
             ghc.GHOSTTY_ACTION_RING_BELL => {

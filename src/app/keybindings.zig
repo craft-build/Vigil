@@ -26,6 +26,9 @@ pub const Group = enum {
     }
 };
 
+/// Commands Vigil implements itself rather than delegating to libghostty.
+pub const VigilAction = enum { show_shortcuts };
+
 pub const Command = struct {
     title: []const u8,
     group: Group,
@@ -39,6 +42,11 @@ pub const Command = struct {
     /// `copy`/`paste` keys instead. Only set this for defaults known to be
     /// bound; a user who unbinds the command would still see the hint.
     fallback_keys: ?[]const u8 = null,
+    /// Set for Vigil-owned commands; `action` is then unused and the
+    /// shortcut is `fallback_keys` (Vigil, not libghostty, owns the key).
+    vigil: ?VigilAction = null,
+    /// Listed in the command palette (false for the palette's own toggle).
+    in_palette: bool = true,
 };
 
 /// Only commands Vigil actually implements belong here -- splits, for
@@ -62,6 +70,8 @@ pub const commands = [_]Command{
     .{ .title = "Reset font size", .group = .view, .action = "reset_font_size" },
     .{ .title = "Toggle full screen", .group = .view, .action = "toggle_fullscreen" },
 
+    .{ .title = "Command palette", .group = .app, .action = "toggle_command_palette", .in_palette = false },
+    .{ .title = "Keyboard shortcuts", .group = .app, .action = "", .vigil = .show_shortcuts, .fallback_keys = "⌘/" },
     .{ .title = "Reload config", .group = .app, .action = "reload_config" },
     .{ .title = "Quit", .group = .app, .action = "quit" },
 };
@@ -75,6 +85,7 @@ pub fn init(cfg: ghc.ghostty_config_t) void {
 
 /// The trigger currently bound to `cmd`, or null when unbound.
 pub fn lookup(cmd: Command) ?ghc.ghostty_input_trigger_s {
+    if (cmd.vigil != null) return null;
     const cfg = config orelse return null;
     const trigger = ghc.ghostty_config_trigger(cfg, cmd.action.ptr, cmd.action.len);
     return if (isBound(trigger)) trigger else null;
@@ -100,6 +111,7 @@ pub fn display(cmd: Command, buf: *[max_format_len]u8) ?[]const u8 {
 
 /// Runs `cmd` against `surface` as if its key were pressed.
 pub fn perform(surface: ghc.ghostty_surface_t, cmd: Command) bool {
+    if (cmd.vigil != null) return false; // the caller dispatches Vigil actions
     return ghc.ghostty_surface_binding_action(surface, cmd.action.ptr, cmd.action.len);
 }
 

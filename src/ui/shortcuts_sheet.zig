@@ -7,6 +7,8 @@ const objc = @import("objc");
 const appkit = @import("../app/appkit.zig");
 const keybindings = @import("../app/keybindings.zig");
 const theme = @import("theme.zig");
+const keycaps = @import("keycaps.zig");
+const overlay_ui = @import("overlay.zig");
 
 const panel_w: f64 = 680;
 const pad: f64 = 24;
@@ -16,13 +18,10 @@ const group_gap: f64 = 14;
 const header_h: f64 = 26;
 const title_h: f64 = 56;
 
-const NSViewWidthSizable: u64 = 2;
-const NSViewHeightSizable: u64 = 16;
 // All four margins flexible: keeps the panel centered as the window resizes.
 const centered_mask: u64 = 1 | 4 | 8 | 32;
 
 var overlay: ?objc.Object = null;
-var backdrop_class: ?objc.Class = null;
 
 pub fn isVisible() bool {
     return overlay != null;
@@ -42,12 +41,7 @@ pub fn show(parent: objc.Object) void {
     if (isVisible()) return;
 
     const bounds = parent.msgSend(appkit.NSRect, "bounds", .{});
-    const backdrop = backdropClass().msgSend(objc.Object, "alloc", .{})
-        .msgSend(objc.Object, "initWithFrame:", .{bounds});
-    appkit.styleLayer(appkit.layerBacked(backdrop), .{
-        .background = .{ .r = 0.01, .g = 0.015, .b = 0.03, .a = 0.72 },
-    });
-    backdrop.msgSend(void, "setAutoresizingMask:", .{NSViewWidthSizable | NSViewHeightSizable});
+    const backdrop = overlay_ui.backdrop(bounds, hide);
 
     const col_w = (panel_w - 2 * pad - col_gap) / 2;
     const left = [_]keybindings.Group{ .tabs, .app };
@@ -77,7 +71,7 @@ pub fn show(parent: objc.Object) void {
         appkit.font(theme.fonts.display, theme.text_size.md, false),
         theme.colors.text_primary,
     ));
-    appkit.addSubview(panel, keyChip(panel_w - pad - 40, panel_h - 38, "esc"));
+    appkit.addSubview(panel, keycaps.chip(panel_w - pad - 40, panel_h - 38, "esc"));
 
     buildColumn(panel, &left, pad, panel_h - title_h, col_w);
     buildColumn(panel, &right, pad + col_w + col_gap, panel_h - title_h, col_w);
@@ -171,79 +165,5 @@ fn buildRow(
         return;
     };
 
-    // Modifiers are one chip each; whatever follows is the key chip.
-    var chips: [6][]const u8 = undefined;
-    var n: usize = 0;
-    var rest: []const u8 = text;
-    while (rest.len >= 3 and n < chips.len - 1 and isModifierGlyph(rest[0..3])) {
-        chips[n] = rest[0..3];
-        n += 1;
-        rest = rest[3..];
-    }
-    if (rest.len > 0) {
-        chips[n] = rest;
-        n += 1;
-    }
-
-    // Right-align: place from the trailing edge going left.
-    var right = x + width;
-    var i = n;
-    while (i > 0) {
-        i -= 1;
-        const w = chipWidth(chips[i]);
-        right -= w;
-        var z: [24:0]u8 = undefined;
-        const s = std.fmt.bufPrintZ(&z, "{s}", .{chips[i]}) catch continue;
-        appkit.addSubview(panel, keyChip(right, y + 3, s));
-        right -= 4;
-    }
-}
-
-fn isModifierGlyph(s: []const u8) bool {
-    inline for (.{ "⌃", "⌥", "⇧", "⌘" }) |g| {
-        if (std.mem.eql(u8, s, g)) return true;
-    }
-    return false;
-}
-
-fn chipWidth(text: []const u8) f64 {
-    const chars: f64 = @floatFromInt(std.unicode.utf8CountCodepoints(text) catch text.len);
-    return @max(22, 12 + chars * 7);
-}
-
-fn keyChip(x: f64, y: f64, text: [:0]const u8) objc.Object {
-    const w = chipWidth(text);
-    const chip = appkit.panel(
-        appkit.rect(x, y, w, 22),
-        .{
-            .background = theme.colors.bg_surface_overlay,
-            .border = theme.colors.border_default,
-            .corner_radius = theme.radius.xs + 1,
-        },
-    );
-    const label = appkit.label(
-        appkit.rect(0, 3, w, 16),
-        text,
-        appkit.font(theme.fonts.mono, theme.text_size.xs2, true),
-        theme.colors.text_primary,
-    );
-    label.msgSend(void, "setAlignment:", .{@as(i64, 2)}); // NSTextAlignmentCenter
-    appkit.addSubview(chip, label);
-    return chip;
-}
-
-fn backdropClass() objc.Class {
-    if (backdrop_class) |cls| return cls;
-    const cls = objc.allocateClassPair(appkit.class("NSView"), "VigilSheetBackdrop") orelse
-        @panic("failed to register VigilSheetBackdrop");
-    std.debug.assert(cls.addMethod("mouseDown:", backdropMouseDown));
-    objc.registerClassPair(cls);
-    backdrop_class = cls;
-    return cls;
-}
-
-/// Clicking the dimmed area dismisses the sheet (clicks on the panel itself
-/// land on the panel's subviews first and don't reach here).
-fn backdropMouseDown(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    hide();
+    keycaps.addShortcut(panel, text, x + width, y + 3);
 }

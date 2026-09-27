@@ -43,4 +43,5 @@ pub fn main() !void {
 
 test {
     _ = keybindings;
+    _ = @import("ui/palette.zig");
 }

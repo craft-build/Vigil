@@ -21,11 +21,13 @@ real default libghostty config).
 Each should reuse `src/ui/theme.zig`'s tokens and the `appkit.panel`/`appkit.label` helpers in
 `src/app/appkit.zig`, following the pattern in `src/ui/chrome.zig`.
 
-- **Screen 02 — Command palette**: `⌘K` overlay over a dimmed/blurred session
-  (`NSVisualEffectView` or a manually blurred layer), a search field, "Recent"/"Actions" sections
-  with keycap chips. Needs a way to intercept `⌘K` globally within the window — likely an
-  `NSEvent` local monitor (`addLocalMonitorForEventsMatchingMask:handler:`) rather than routing
-  through the terminal surface's `keyDown:`.
+- **Screen 02 — Command palette**: done (`src/ui/palette.zig`). Opens on libghostty's
+  `toggle_command_palette` action (⇧⌘P by default; ⌘K stays with clear-screen), filters the
+  keybinding registry (substring matches first, then in-order subsequences), ↑/↓/↩/⎋ to
+  navigate/run/close. Vigil-owned commands (`VigilAction`, currently just the shortcuts sheet)
+  live in the registry alongside libghostty actions. Known limits: the query is drawn by hand
+  (no NSTextField), so no IME, paste or mid-string editing; there's no "Recent" section (needs
+  usage tracking); running a command with a live process is unguarded.
 - **Screen 03 — Theme gallery**: six palette cards. Wire selection to real libghostty config —
   `ghostty_surface_update_config` / `ghostty_config_t` palette fields — not just a visual swap.
 - **Screen 04 — Preferences**: a settings sidebar (General/Appearance/Text/Keybindings/Shell)
@@ -43,11 +45,8 @@ Each should reuse `src/ui/theme.zig`'s tokens and the `appkit.panel`/`appkit.lab
   NSEvent local monitor, reusable for the palette). Caveats: libghostty's reverse lookup skips
   binds flagged `performable`, which is how its macOS defaults for ⌘C/⌘V/⌘K are declared, so
   Copy/Paste use a `fallback_keys` hint and Clear screen shows "—" although ⌘K does work.
-  **⌘K is bound to `clear_screen` by default** (an earlier note here said it was free — wrong).
-  The monitor runs before libghostty, so Vigil can claim ⌘K for the palette, but that shadows
-  clear-screen; decide whether to move clear-screen or use another palette shortcut. Vigil-owned
-  shortcuts (⌘K palette, ⌘/) aren't libghostty actions and would need a small static entry type
-  in the registry to appear in the sheet.
+  **⌘K is bound to `clear_screen` by default**, so the palette uses ⇧⌘P instead. Vigil-owned
+  shortcuts (⌘/) are registry entries with `vigil` set, so they appear in the sheet and palette.
 
 ## Terminal engine integration gaps
 
