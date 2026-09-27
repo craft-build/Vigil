@@ -145,12 +145,13 @@ pub const App = struct {
         }
     }
 
-    /// The surface's shell exited (or it was closed): drop its tab.
+    /// The surface's shell exited (or it was closed): drop its pane (and,
+    /// if it was the tab's only one, the whole tab).
     fn closeSurface(userdata: ?*anyopaque, process_alive: bool) callconv(.c) void {
         _ = process_alive; // TODO(roadmap): confirm before closing a live process.
         const window = Window.instance orelse return;
         const ts: *TerminalSurface = @ptrCast(@alignCast(userdata orelse return));
-        window.closeTab(ts);
+        window.closePane(ts);
     }
 
     /// Surface-scoped callbacks receive the `userdata` set on the surface

@@ -23,6 +23,12 @@ const NSEventModifierFlagCommand: u64 = 1 << 20;
 pub const TerminalSurface = struct {
     view: objc.Object,
     surface: ghc.ghostty_surface_t,
+    /// The frame `Window`'s pane layout last placed this surface at, in the
+    /// content view's coordinate space. Used for geometric pane navigation
+    /// (`goto_split up/down/left/right`) and to size a freshly-split
+    /// sibling before its own first layout pass. Meaningless until the
+    /// first layout after creation sets it for real.
+    last_frame: appkit.NSRect = std.mem.zeroes(appkit.NSRect),
 
     var registered_class: ?objc.Class = null;
 
@@ -65,7 +71,7 @@ pub const TerminalSurface = struct {
         const surface = ghc.ghostty_surface_new(app, &cfg) orelse
             return error.GhosttySurfaceNewFailed;
 
-        self.* = .{ .view = view, .surface = surface };
+        self.* = .{ .view = view, .surface = surface, .last_frame = frame };
         return self;
     }
 
@@ -196,8 +202,15 @@ pub const TerminalSurface = struct {
         area.msgSend(void, "release", .{});
     }
 
+    /// Fired on every mouse-down (any button) so `Window` can move pane
+    /// focus to whichever split the user actually clicked in.
+    pub var on_click: ?*const fn (*TerminalSurface) void = null;
+
     fn mouseButton(id: objc.c.id, event: objc.c.id, state: c_uint, button: c_uint) void {
         const self = selfOf(id);
+        if (state == ghc.GHOSTTY_MOUSE_PRESS) {
+            if (on_click) |cb| cb(self);
+        }
         const ev = objc.Object{ .value = event };
         const mods = ghosttyMods(ev.msgSend(u64, "modifierFlags", .{}));
         // Update the position first so the click lands where the cursor is.

@@ -60,6 +60,14 @@ pub const commands = [_]Command{
     .{ .title = "Move tab left", .group = .tabs, .action = "move_tab:-1" },
     .{ .title = "Move tab right", .group = .tabs, .action = "move_tab:1" },
 
+    .{ .title = "Split right", .group = .tabs, .action = "new_split:right" },
+    .{ .title = "Split down", .group = .tabs, .action = "new_split:down" },
+    .{ .title = "Close pane", .group = .tabs, .action = "close_surface" },
+    .{ .title = "Next pane", .group = .tabs, .action = "goto_split:next" },
+    .{ .title = "Previous pane", .group = .tabs, .action = "goto_split:previous" },
+    .{ .title = "Equalize panes", .group = .tabs, .action = "equalize_splits" },
+    .{ .title = "Zoom pane", .group = .tabs, .action = "toggle_split_zoom" },
+
     .{ .title = "Copy", .group = .edit, .action = "copy_to_clipboard", .fallback_keys = "⌘C" },
     .{ .title = "Paste", .group = .edit, .action = "paste_from_clipboard", .fallback_keys = "⌘V" },
     .{ .title = "Select all", .group = .edit, .action = "select_all" },

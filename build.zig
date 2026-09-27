@@ -60,6 +60,10 @@ pub fn build(b: *std.Build) void {
         .name = "vigil",
         .root_module = exe_mod,
     });
+    // `just app` repoints this binary's rpath at a bundled Contents/Frameworks
+    // via install_name_tool; that rewrite needs slack in the Mach-O load
+    // commands to grow into, which this reserves at link time.
+    exe.headerpad_max_install_names = true;
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

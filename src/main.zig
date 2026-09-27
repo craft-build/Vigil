@@ -9,6 +9,7 @@ const appkit = @import("app/appkit.zig");
 const Window = @import("app/Window.zig").Window;
 const keybindings = @import("app/keybindings.zig");
 const settings = @import("app/settings.zig");
+const menu = @import("app/menu.zig");
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
@@ -36,6 +37,7 @@ pub fn main() !void {
     NSApp.msgSend(void, "setActivationPolicy:", .{@as(i64, 0)}); // NSApplicationActivationPolicyRegular
 
     const window = try Window.create(allocator, app.app);
+    menu.install();
     window.show();
     NSApp.msgSend(void, "activateIgnoringOtherApps:", .{true});
     NSApp.msgSend(void, "run", .{});
@@ -46,5 +48,6 @@ test {
     _ = @import("app/settings.zig");
     _ = @import("app/themes.zig");
     _ = @import("app/preferences.zig");
+    _ = @import("app/pane.zig");
     _ = @import("ui/palette.zig");
 }
