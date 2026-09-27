@@ -92,6 +92,7 @@ pub const Window = struct {
         };
         instance = self;
         chrome.on_tab_click = onTabClick;
+        chrome.on_settings_click = preferences_window.show;
         keymonitor.install(onKeyEvent);
         palette.on_run = runCommand;
         theme_gallery.on_select = applyTheme;

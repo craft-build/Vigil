@@ -6,6 +6,7 @@ const std = @import("std");
 const objc = @import("objc");
 const appkit = @import("../app/appkit.zig");
 const theme = @import("theme.zig");
+const clickable = @import("clickable.zig");
 
 const NSViewMinXMargin: u64 = 1;
 const NSViewWidthSizable: u64 = 2;
@@ -95,6 +96,50 @@ fn tabItem(frame: appkit.NSRect, index: usize, style: appkit.LayerStyle) objc.Ob
     return item;
 }
 
+/// Called when the gear button at the trailing edge of the tab bar is clicked.
+pub var on_settings_click: ?*const fn () void = null;
+
+const SettingsButton = clickable.Kind("VigilSettingsButton");
+
+fn settingsClicked(_: usize) void {
+    if (on_settings_click) |cb| cb();
+}
+
+/// A gear (SF Symbol) pinned to the tab bar's trailing edge.
+fn addSettingsButton(bar: objc.Object, bar_width: f64) void {
+    const size: f64 = 26;
+    SettingsButton.on_click = settingsClicked;
+    const button = SettingsButton.view(
+        appkit.rect(bar_width - size - 14, (tab_bar_height - size) / 2, size, size),
+        0,
+        .{ .corner_radius = theme.radius.sm },
+    );
+    setAutoresizing(button, NSViewMinXMargin);
+
+    const symbol = appkit.class("NSImage").msgSend(
+        objc.Object,
+        "imageWithSystemSymbolName:accessibilityDescription:",
+        .{ appkit.nsString("gearshape"), appkit.nsString("Preferences") },
+    );
+    if (symbol.value != null) {
+        const icon = appkit.class("NSImageView").msgSend(objc.Object, "imageViewWithImage:", .{symbol});
+        icon.msgSend(void, "setFrame:", .{appkit.rect(4, 4, size - 8, size - 8)});
+        icon.msgSend(void, "setContentTintColor:", .{appkit.nsColor(theme.colors.text_tertiary)});
+        appkit.addSubview(button, icon);
+    } else {
+        // No SF Symbols (pre-macOS 11): fall back to the gear glyph.
+        const glyph = appkit.label(
+            appkit.rect(0, 3, size, 18),
+            "\u{2699}",
+            appkit.font(theme.fonts.display, theme.text_size.md, false),
+            theme.colors.text_tertiary,
+        );
+        appkit.setAlignment(glyph, .center);
+        appkit.addSubview(button, glyph);
+    }
+    appkit.addSubview(bar, button);
+}
+
 pub const TabBar = struct {
     group: objc.Object,
 };
@@ -122,6 +167,7 @@ pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) TabBar {
         .{ .background = theme.colors.bg_sunken, .corner_radius = theme.radius.pill },
     );
     appkit.addSubview(bar, group);
+    addSettingsButton(bar, width);
     return .{ .group = group };
 }
 
