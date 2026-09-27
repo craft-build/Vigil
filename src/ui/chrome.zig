@@ -11,7 +11,6 @@ const clickable = @import("clickable.zig");
 const NSViewMinXMargin: u64 = 1;
 const NSViewWidthSizable: u64 = 2;
 const NSViewMinYMargin: u64 = 8;
-const NSViewHeightSizable: u64 = 16;
 const NSViewMaxYMargin: u64 = 32;
 
 fn setAutoresizing(view: objc.Object, mask: u64) void {
@@ -20,7 +19,6 @@ fn setAutoresizing(view: objc.Object, mask: u64) void {
 
 pub const tab_bar_height: f64 = 38;
 pub const status_bar_height: f64 = 26;
-pub const log_pane_width: f64 = 260;
 
 // NSWindow's native close/minimize/zoom buttons still live at the leading
 // edge of the full-size titlebar. Leave their area clear of the tab pills.
@@ -282,42 +280,3 @@ pub fn buildStatusBar(parent: objc.Object, width: f64) void {
     appkit.addSubview(bar, trailing);
 }
 
-/// Builds the right-hand "logs -- tail -f" panel. `frame` is its initial
-/// position/size within the parent (right-pinned via autoresizing).
-pub fn buildLogPane(parent: objc.Object, frame: appkit.NSRect) void {
-    const pane = appkit.panel(frame, .{ .background = theme.colors.bg_sunken });
-    setAutoresizing(pane, NSViewMinXMargin | NSViewHeightSizable);
-    appkit.addSubview(parent, pane);
-
-    const border = appkit.panel(
-        appkit.rect(0, 0, 1, frame.size.height),
-        .{ .background = theme.colors.border_subtle },
-    );
-    setAutoresizing(border, NSViewHeightSizable);
-    appkit.addSubview(pane, border);
-
-    const header_font = appkit.font(theme.fonts.mono, theme.text_size.xs2, true);
-    appkit.addSubview(pane, appkit.label(
-        appkit.rect(12, frame.size.height - 30, frame.size.width - 24, 18),
-        "logs \u{2014} tail -f",
-        header_font,
-        theme.colors.text_tertiary,
-    ));
-
-    const line_font = appkit.font(theme.fonts.mono, 11, true);
-    const lines = [_][:0]const u8{
-        "renderer: gpu backend metal",
-        "pty: spawned zsh (pid 41213)",
-        "session: attached pane 2",
-    };
-    var y = frame.size.height - 56;
-    for (lines) |line| {
-        appkit.addSubview(pane, appkit.label(
-            appkit.rect(12, y, frame.size.width - 24, 16),
-            line,
-            line_font,
-            theme.colors.text_tertiary,
-        ));
-        y -= 20;
-    }
-}

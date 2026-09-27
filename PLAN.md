@@ -97,9 +97,6 @@ Tracked as `TODO(roadmap)` comments in the source; listed here with more context
 
 ## Other polish
 
-- **Log pane** (`src/ui/chrome.zig` `buildLogPane`): static demo text. Real `tail -f`-style
-  logging would need Vigil to actually emit structured logs somewhere and read them back, or hook
-  into libghostty's own logging if it exposes one.
 - **Window persistence**: window position/size, last-used tab, and preferences aren't saved
   between launches.
 - **Font bundling**: `Space Grotesk` / `IBM Plex Sans` / `IBM Plex Mono` fall back to system fonts

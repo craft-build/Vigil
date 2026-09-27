@@ -71,15 +71,6 @@ pub const Window = struct {
         window.msgSend(void, "center", .{});
 
         const content = window.msgSend(objc.Object, "contentView", .{});
-        chrome.buildLogPane(
-            content,
-            appkit.rect(
-                window_w - chrome.log_pane_width,
-                chrome.status_bar_height,
-                chrome.log_pane_width,
-                window_h - chrome.tab_bar_height - chrome.status_bar_height,
-            ),
-        );
         const tab_bar = chrome.buildTabBar(content, window_w, window_h);
         chrome.buildStatusBar(content, window_w);
 
@@ -117,7 +108,7 @@ pub const Window = struct {
         const frame = appkit.rect(
             0,
             chrome.status_bar_height,
-            bounds.size.width - chrome.log_pane_width,
+            bounds.size.width,
             bounds.size.height - chrome.tab_bar_height - chrome.status_bar_height,
         );
         const surface = try TerminalSurface.create(self.allocator, self.app, frame, inherit);
