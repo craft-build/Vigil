@@ -26,7 +26,7 @@ pub fn chip(x: f64, y: f64, text: [:0]const u8) objc.Object {
         appkit.font(theme.fonts.mono, theme.text_size.xs2, true),
         theme.colors.text_primary,
     );
-    label.msgSend(void, "setAlignment:", .{@as(i64, 2)}); // NSTextAlignmentCenter
+    appkit.setAlignment(label, .center);
     appkit.addSubview(view, label);
     return view;
 }

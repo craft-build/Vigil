@@ -102,6 +102,15 @@ pub fn font(family: [:0]const u8, size: f64, mono: bool) objc.Object {
     return class("NSFont").msgSend(objc.Object, "systemFontOfSize:", .{size});
 }
 
+/// NSTextAlignment on this SDK: left 0, center 1, right 2 (measured, not
+/// assumed -- it is the reverse of what the constant names' order suggests
+/// on iOS-derived docs).
+pub const TextAlign = enum(i64) { left = 0, center = 1, right = 2 };
+
+pub fn setAlignment(view: objc.Object, alignment: TextAlign) void {
+    view.msgSend(void, "setAlignment:", .{@intFromEnum(alignment)});
+}
+
 pub fn label(frame: NSRect, text: [:0]const u8, f: objc.Object, color: theme.Color) objc.Object {
     const field = class("NSTextField")
         .msgSend(objc.Object, "alloc", .{})

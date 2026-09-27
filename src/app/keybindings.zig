@@ -27,7 +27,7 @@ pub const Group = enum {
 };
 
 /// Commands Vigil implements itself rather than delegating to libghostty.
-pub const VigilAction = enum { show_shortcuts, show_themes };
+pub const VigilAction = enum { show_shortcuts, show_themes, show_preferences };
 
 pub const Command = struct {
     title: []const u8,
@@ -73,6 +73,7 @@ pub const commands = [_]Command{
 
     .{ .title = "Command palette", .group = .app, .action = "toggle_command_palette", .in_palette = false },
     .{ .title = "Keyboard shortcuts", .group = .app, .action = "", .vigil = .show_shortcuts, .fallback_keys = "⌘/" },
+    .{ .title = "Preferences\u{2026}", .group = .app, .action = "", .vigil = .show_preferences, .fallback_keys = "⌘," },
     .{ .title = "Reload config", .group = .app, .action = "reload_config" },
     .{ .title = "Quit", .group = .app, .action = "quit" },
 };

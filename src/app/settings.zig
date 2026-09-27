@@ -65,6 +65,26 @@ pub const Store = struct {
         try self.add(alloc, key, value);
     }
 
+    /// Removes only the entries for `key` whose value is exactly `value`.
+    pub fn removeExact(self: *Store, alloc: std.mem.Allocator, key: []const u8, value: []const u8) void {
+        var i = self.entries.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = self.entries.items[i];
+            if (!std.mem.eql(u8, e.key, key) or !std.mem.eql(u8, e.value, value)) continue;
+            alloc.free(e.key);
+            alloc.free(e.value);
+            _ = self.entries.orderedRemove(i);
+        }
+    }
+
+    pub fn has(self: *const Store, key: []const u8, value: []const u8) bool {
+        for (self.entries.items) |e| {
+            if (std.mem.eql(u8, e.key, key) and std.mem.eql(u8, e.value, value)) return true;
+        }
+        return false;
+    }
+
     pub fn get(self: *const Store, key: []const u8) ?[]const u8 {
         for (self.entries.items) |e| {
             if (std.mem.eql(u8, e.key, key)) return e.value;
@@ -189,6 +209,34 @@ pub fn save() void {
 
 // -- building and applying configs ------------------------------------------
 
+/// The most recently built config; lets the preferences UI show *effective*
+/// values (including ones from the user's own Ghostty config) rather than
+/// only what Vigil's overrides file says.
+pub var current: ghc.ghostty_config_t = null;
+
+/// Effective numeric value of `key` (f32 or f64 config fields).
+pub fn effectiveFloat(comptime T: type, key: [:0]const u8) ?T {
+    const cfg = current orelse return null;
+    var out: T = 0;
+    if (!ghc.ghostty_config_get(cfg, &out, key.ptr, key.len)) return null;
+    return out;
+}
+
+pub fn effectiveBool(key: [:0]const u8) ?bool {
+    const cfg = current orelse return null;
+    var out: bool = false;
+    if (!ghc.ghostty_config_get(cfg, &out, key.ptr, key.len)) return null;
+    return out;
+}
+
+/// Effective value of an enum-typed key, as its tag name ("block", ...).
+pub fn effectiveEnum(key: [:0]const u8) ?[]const u8 {
+    const cfg = current orelse return null;
+    var out: ?[*:0]const u8 = null;
+    if (!ghc.ghostty_config_get(cfg, @ptrCast(&out), key.ptr, key.len)) return null;
+    return std.mem.span(out orelse return null);
+}
+
 /// A finalized config: the user's Ghostty config files, then Vigil's
 /// overrides file on top.
 pub fn buildConfig() ?ghc.ghostty_config_t {
@@ -213,6 +261,7 @@ pub fn buildConfig() ?ghc.ghostty_config_t {
         const d = ghc.ghostty_config_get_diagnostic(cfg, i);
         if (d.message != null) log.warn("config: {s}", .{d.message});
     }
+    current = cfg;
     return cfg;
 }
 

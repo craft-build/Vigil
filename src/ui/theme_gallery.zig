@@ -198,7 +198,7 @@ fn buildCard(t: themes.Theme, index: usize, x: f64, y: f64) objc.Object {
             appkit.font(theme.fonts.body, theme.text_size.sm, false),
             theme.colors.green_500,
         );
-        check.msgSend(void, "setAlignment:", .{@as(i64, 1)}); // NSTextAlignmentRight
+        appkit.setAlignment(check, .right);
         appkit.addSubview(card, check);
     }
     return card;

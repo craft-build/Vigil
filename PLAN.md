@@ -47,10 +47,19 @@ add a setter per control, call `settings.save()` + `settings.apply(app)`. Limits
 to libghostty are never freed (small leak per change); a hand-edited overrides file loses
 comments on the next save.
 
-- **Screen 04 — Preferences**: a settings sidebar (General/Appearance/Text/Keybindings/Shell)
-  next to a rows-and-controls panel. Wire controls to real config: cursor style, background
-  opacity/blur, font family/size, ligatures. Check `ghostty_config_get`/`ghostty_surface_update_config`
-  in `vendor/ghostty/include/ghostty.h` for the config surface.
+- **Screen 04 — Preferences**: done (`src/ui/preferences_window.zig`, model in
+  `src/app/preferences.zig`). A separate native window (⌘, or palette → "Preferences…") with a
+  five-section sidebar and native AppKit controls generated from a settings table. Wired to real
+  config: mouse-hide, window padding, cursor style, background opacity + blur, font family/size,
+  ligatures (via `font-feature = -calt/-liga/-dlig`), shell integration; theme and shortcuts
+  buttons open those screens. Verified end to end: values written through the model come back
+  from libghostty's effective config, and opacity < 1 makes the window non-opaque.
+  Limits: opacity/blur only affect the terminal area (chrome bars stay solid); blur and padding
+  read only Vigil's overrides file (libghostty's C API can't return those types), so a value set
+  in the user's own Ghostty config isn't reflected in the control; font family is free text with
+  no font picker or validation; cursor blink, scrollback, and `command` aren't exposed;
+  Keybindings is a pointer to the shortcuts sheet, not an editor. Not yet exercised by hand:
+  clicking/dragging the controls themselves.
 - **Screen 05 — First-run onboarding**: single window, "Import shell config" vs. "Start fresh".
   The import path needs to actually read the user's existing shell profile (zsh/bash/fish) —
   scope what "import" means concretely before implementing.

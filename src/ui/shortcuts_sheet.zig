@@ -160,7 +160,7 @@ fn buildRow(
             font,
             theme.colors.text_disabled,
         );
-        dash.msgSend(void, "setAlignment:", .{@as(i64, 1)}); // NSTextAlignmentRight
+        appkit.setAlignment(dash, .right);
         appkit.addSubview(panel, dash);
         return;
     };

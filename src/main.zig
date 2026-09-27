@@ -45,5 +45,6 @@ test {
     _ = keybindings;
     _ = @import("app/settings.zig");
     _ = @import("app/themes.zig");
+    _ = @import("app/preferences.zig");
     _ = @import("ui/palette.zig");
 }

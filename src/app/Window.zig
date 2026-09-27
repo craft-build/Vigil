@@ -15,6 +15,8 @@ const theme = @import("../ui/theme.zig");
 const shortcuts_sheet = @import("../ui/shortcuts_sheet.zig");
 const palette = @import("../ui/palette.zig");
 const theme_gallery = @import("../ui/theme_gallery.zig");
+const preferences_window = @import("../ui/preferences_window.zig");
+const prefs = @import("preferences.zig");
 const settings = @import("settings.zig");
 const themes = @import("themes.zig");
 const keybindings = @import("keybindings.zig");
@@ -93,6 +95,8 @@ pub const Window = struct {
         keymonitor.install(onKeyEvent);
         palette.on_run = runCommand;
         theme_gallery.on_select = applyTheme;
+        preferences_window.on_change = onPreferencesChanged;
+        preferences_window.on_button = onPreferencesButton;
 
         try self.newTab(null);
         return self;
@@ -100,6 +104,7 @@ pub const Window = struct {
 
     pub fn show(self: *Window) void {
         self.window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
+        if (settings.current) |cfg| self.syncAppearance(cfg);
     }
 
     // -- tab operations ---------------------------------------------------
@@ -202,6 +207,12 @@ pub const Window = struct {
     /// hidden behind it. Returns true to consume the event.
     fn onKeyEvent(event: objc.Object) bool {
         const self = instance orelse return false;
+        // The monitor sees every window's keys; only the main window's are ours,
+        // except ⌘W/Esc in Preferences.
+        const event_window = event.msgSend(objc.Object, "window", .{});
+        if (event_window.value != self.window.value) {
+            return preferences_window.isPreferencesWindow(event_window) and preferences_window.handleKey(event);
+        }
         const mods = keymonitor.modifiers(event);
         const code = keymonitor.keyCode(event);
 
@@ -229,6 +240,7 @@ pub const Window = struct {
         if (cmd.vigil) |action| switch (action) {
             .show_shortcuts => shortcuts_sheet.show(self.content),
             .show_themes => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
+            .show_preferences => preferences_window.show(),
         } else {
             _ = keybindings.perform(self.tabs.items[self.active].surface.surface, cmd);
         }
@@ -243,6 +255,41 @@ pub const Window = struct {
         settings.save();
         settings.apply(self.app);
         theme_gallery.setApplied(index);
+    }
+
+    fn onPreferencesChanged() void {
+        const self = instance orelse return;
+        settings.apply(self.app);
+    }
+
+    /// Preferences buttons open screens that live in the main window.
+    fn onPreferencesButton(action: prefs.ButtonAction) void {
+        const self = instance orelse return;
+        self.window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
+        switch (action) {
+            .choose_theme => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
+            .show_shortcuts => shortcuts_sheet.show(self.content),
+        }
+    }
+
+    /// Makes the window translucent (and blurred, per config) when
+    /// `background-opacity` < 1, following what Ghostty's own macOS app does:
+    /// a non-opaque window with a near-clear background, then libghostty
+    /// applies the blur. Vigil's chrome bars stay solid; the terminal area
+    /// shows through.
+    pub fn syncAppearance(self: *Window, cfg: ghc.ghostty_config_t) void {
+        var opacity: f64 = 1;
+        _ = ghc.ghostty_config_get(cfg, &opacity, "background-opacity", "background-opacity".len);
+        if (opacity < 1) {
+            self.window.msgSend(void, "setOpaque:", .{false});
+            self.window.msgSend(void, "setBackgroundColor:", .{
+                appkit.class("NSColor").msgSend(objc.Object, "colorWithWhite:alpha:", .{ @as(f64, 1), @as(f64, 0.001) }),
+            });
+            ghc.ghostty_set_window_background_blur(self.app, self.window.value);
+        } else {
+            self.window.msgSend(void, "setOpaque:", .{true});
+            self.window.msgSend(void, "setBackgroundColor:", .{appkit.nsColor(theme.colors.bg_app)});
+        }
     }
 
     // -- libghostty action routing ---------------------------------------
@@ -300,7 +347,16 @@ pub const Window = struct {
                 settings.apply(self.app);
                 return true;
             },
-            ghc.GHOSTTY_ACTION_CONFIG_CHANGE => return true, // applied by libghostty itself
+            ghc.GHOSTTY_ACTION_CONFIG_CHANGE => {
+                if (act.action.config_change.config) |cfg| self.syncAppearance(cfg);
+                return true;
+            },
+            // ⌘, is bound to open_config by default; Vigil's own Preferences
+            // takes its place rather than opening a config file in an editor.
+            ghc.GHOSTTY_ACTION_OPEN_CONFIG => {
+                preferences_window.show();
+                return true;
+            },
             ghc.GHOSTTY_ACTION_RING_BELL => {
                 appkit.class("NSSound").msgSend(void, "beep", .{});
                 return true;
