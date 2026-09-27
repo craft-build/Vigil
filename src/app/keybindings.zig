@@ -32,6 +32,13 @@ pub const Command = struct {
     /// A libghostty binding action string, exactly as written in the
     /// `keybind` config (e.g. "new_tab", "increase_font_size:1").
     action: [:0]const u8,
+    /// Shown only when the config lookup can't yield a displayable shortcut.
+    /// libghostty's reverse lookup (`ghostty_config_trigger`) skips binds
+    /// carrying the `performable` flag -- which is how the macOS defaults for
+    /// copy/paste (⌘C/⌘V) are declared -- and returns the bare media
+    /// `copy`/`paste` keys instead. Only set this for defaults known to be
+    /// bound; a user who unbinds the command would still see the hint.
+    fallback_keys: ?[]const u8 = null,
 };
 
 /// Only commands Vigil actually implements belong here -- splits, for
@@ -45,8 +52,8 @@ pub const commands = [_]Command{
     .{ .title = "Move tab left", .group = .tabs, .action = "move_tab:-1" },
     .{ .title = "Move tab right", .group = .tabs, .action = "move_tab:1" },
 
-    .{ .title = "Copy", .group = .edit, .action = "copy_to_clipboard" },
-    .{ .title = "Paste", .group = .edit, .action = "paste_from_clipboard" },
+    .{ .title = "Copy", .group = .edit, .action = "copy_to_clipboard", .fallback_keys = "⌘C" },
+    .{ .title = "Paste", .group = .edit, .action = "paste_from_clipboard", .fallback_keys = "⌘V" },
     .{ .title = "Select all", .group = .edit, .action = "select_all" },
     .{ .title = "Clear screen", .group = .edit, .action = "clear_screen" },
 
@@ -81,6 +88,14 @@ fn isBound(t: ghc.ghostty_input_trigger_s) bool {
         ghc.GHOSTTY_TRIGGER_UNICODE => t.key.unicode != 0,
         else => false, // catch_all isn't a displayable shortcut
     };
+}
+
+/// The shortcut text to show for `cmd` ("⇧⌘T"), or null when it has none.
+pub fn display(cmd: Command, buf: *[max_format_len]u8) ?[]const u8 {
+    if (lookup(cmd)) |trigger| {
+        if (format(trigger, buf)) |text| return text;
+    }
+    return cmd.fallback_keys;
 }
 
 /// Runs `cmd` against `surface` as if its key were pressed.
@@ -222,4 +237,11 @@ test "commands resolve against libghostty's default config" {
 
     var buf: [max_format_len]u8 = undefined;
     try std.testing.expectEqualStrings("⌘T", format(lookup(commands[0]).?, &buf).?);
+
+    // Every command that claims a fallback must actually need one, and
+    // copy/paste must display *something* despite libghostty's reverse
+    // lookup returning bare media keys for them.
+    for (commands) |cmd| {
+        if (cmd.fallback_keys != null) try std.testing.expect(display(cmd, &buf) != null);
+    }
 }

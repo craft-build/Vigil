@@ -39,10 +39,15 @@ Each should reuse `src/ui/theme.zig`'s tokens and the `appkit.panel`/`appkit.lab
   reflect Vigil's *actual* keybindings, not just static prototype copy. The registry it needs now
   exists: `src/app/keybindings.zig` lists commands and resolves each one's shortcut from the live
   libghostty config (so user `keybind` overrides show), with `format` for ⌘⇧T-style glyphs and
-  `perform` to run one. Remaining for this screen: the panel UI and the `⌘/` toggle. Vigil-owned
-  shortcuts (⌘K palette, ⌘/) aren't libghostty actions, so they'll need a small static entry type
-  alongside the existing `Command` when those screens land. ⌘K is unbound by default in
-  libghostty's config, so it's free for the palette.
+  `perform` to run one. The panel and `⌘/` toggle are done (`src/ui/shortcuts_sheet.zig`, `src/app/keymonitor.zig` — an
+  NSEvent local monitor, reusable for the palette). Caveats: libghostty's reverse lookup skips
+  binds flagged `performable`, which is how its macOS defaults for ⌘C/⌘V/⌘K are declared, so
+  Copy/Paste use a `fallback_keys` hint and Clear screen shows "—" although ⌘K does work.
+  **⌘K is bound to `clear_screen` by default** (an earlier note here said it was free — wrong).
+  The monitor runs before libghostty, so Vigil can claim ⌘K for the palette, but that shadows
+  clear-screen; decide whether to move clear-screen or use another palette shortcut. Vigil-owned
+  shortcuts (⌘K palette, ⌘/) aren't libghostty actions and would need a small static entry type
+  in the registry to appear in the sheet.
 
 ## Terminal engine integration gaps
 

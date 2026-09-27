@@ -12,6 +12,8 @@ const appkit = @import("appkit.zig");
 const TerminalSurface = @import("TerminalSurface.zig").TerminalSurface;
 const chrome = @import("../ui/chrome.zig");
 const theme = @import("../ui/theme.zig");
+const shortcuts_sheet = @import("../ui/shortcuts_sheet.zig");
+const keymonitor = @import("keymonitor.zig");
 
 extern "c" var _dispatch_main_q: anyopaque;
 extern "c" fn dispatch_async_f(
@@ -83,6 +85,7 @@ pub const Window = struct {
         };
         instance = self;
         chrome.on_tab_click = onTabClick;
+        keymonitor.install(onKeyEvent);
 
         try self.newTab(null);
         return self;
@@ -183,6 +186,29 @@ pub const Window = struct {
         } else if (index < self.tabs.items.len) {
             self.select(index);
         }
+    }
+
+    // -- Vigil-owned shortcuts --------------------------------------------
+
+    /// ⌘/ toggles the shortcuts sheet; while it's open, Esc closes it and
+    /// plain typing is swallowed so keystrokes don't reach the terminal
+    /// hidden behind it. Returns true to consume the event.
+    fn onKeyEvent(event: objc.Object) bool {
+        const self = instance orelse return false;
+        const mods = keymonitor.modifiers(event);
+        const code = keymonitor.keyCode(event);
+
+        if (mods == .command and code == keymonitor.key_slash) {
+            shortcuts_sheet.toggle(self.content);
+            return true;
+        }
+        if (!shortcuts_sheet.isVisible()) return false;
+        if (mods == .none and code == keymonitor.key_escape) {
+            shortcuts_sheet.hide();
+            return true;
+        }
+        // Let other ⌘ shortcuts (quit, new tab, ...) through.
+        return mods != .command;
     }
 
     // -- libghostty action routing ---------------------------------------
