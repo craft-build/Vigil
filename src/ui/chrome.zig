@@ -40,10 +40,64 @@ fn mouseDownCanMoveWindow(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     return true;
 }
 
+/// `index` value carried by the "+" item.
+pub const plus_index: usize = 1 << 30;
+
+/// Called on the main thread when a tab pill (or the "+" item, with
+/// `plus_index`) is clicked.
+pub var on_tab_click: ?*const fn (index: usize) void = null;
+
+var tab_item_class: ?objc.Class = null;
+
+fn tabItemClass() objc.Class {
+    if (tab_item_class) |cls| return cls;
+    const cls = objc.allocateClassPair(appkit.class("NSView"), "VigilTabItemView") orelse
+        @panic("failed to register VigilTabItemView");
+    _ = cls.addIvar("vigilIndex");
+    std.debug.assert(cls.addMethod("mouseDown:", tabItemMouseDown));
+    std.debug.assert(cls.addMethod("mouseDownCanMoveWindow", notMovable));
+    std.debug.assert(cls.addMethod("hitTest:", tabItemHitTest));
+    objc.registerClassPair(cls);
+    tab_item_class = cls;
+    return cls;
+}
+
+fn notMovable(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
+    return false;
+}
+
+/// Labels inside the item would otherwise swallow the click; claim any hit
+/// that lands inside the item itself.
+fn tabItemHitTest(id: objc.c.id, sel: objc.c.SEL, point: appkit.NSPoint) callconv(.c) objc.c.id {
+    const obj = objc.Object{ .value = id };
+    const hit = obj.msgSendSuper(appkit.class("NSView"), objc.Object, objc.Sel{ .value = sel }, .{point});
+    return if (hit.value != null) id else null;
+}
+
+fn tabItemMouseDown(id: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+    const stored = (objc.Object{ .value = id }).getInstanceVariable("vigilIndex");
+    const raw = @intFromPtr(stored.value);
+    if (raw == 0) return;
+    // Stored shifted so the fake "pointer" is aligned (see `tabItem`).
+    if (on_tab_click) |cb| cb((raw >> 4) - 1);
+}
+
+fn tabItem(frame: appkit.NSRect, index: usize, style: appkit.LayerStyle) objc.Object {
+    const item = tabItemClass().msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "initWithFrame:", .{frame});
+    appkit.styleLayer(appkit.layerBacked(item), style);
+    item.setInstanceVariable("vigilIndex", .{ .value = @ptrFromInt((index + 1) << 4) });
+    return item;
+}
+
+pub const TabBar = struct {
+    group: objc.Object,
+};
+
 /// Builds the top pill tab bar and adds it to `parent`. `width` is the
 /// parent's current width; the bar pins to the top edge and stretches with
-/// window width via autoresizing.
-pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) void {
+/// window width via autoresizing. Call `populateTabs` to fill it.
+pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) TabBar {
     const bar = tabBarClass().msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "initWithFrame:", .{
         appkit.rect(0, height - tab_bar_height, width, tab_bar_height),
@@ -58,44 +112,73 @@ pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) void {
     appkit.addSubview(bar, border);
 
     // Pill group container that holds the session tabs.
-    const group_h: f64 = 30;
     const group = appkit.panel(
-        appkit.rect(window_controls_width, (tab_bar_height - group_h) / 2, 420, group_h),
+        appkit.rect(window_controls_width, (tab_bar_height - tab_group_height) / 2, 0, tab_group_height),
         .{ .background = theme.colors.bg_sunken, .corner_radius = theme.radius.pill },
     );
     appkit.addSubview(bar, group);
+    return .{ .group = group };
+}
+
+const tab_group_height: f64 = 30;
+
+/// Replaces the pills in `bar` with one per title, highlighting `active`.
+pub fn populateTabs(bar: TabBar, titles: []const [:0]const u8, active: usize) void {
+    const group = bar.group;
+    const subviews = group.msgSend(objc.Object, "subviews", .{});
+    // Iterate over a copy: removing from the live array while walking it skips items.
+    const copy = subviews.msgSend(objc.Object, "copy", .{});
+    defer copy.msgSend(void, "release", .{});
+    var n = copy.msgSend(u64, "count", .{});
+    while (n > 0) : (n -= 1) {
+        copy.msgSend(objc.Object, "objectAtIndex:", .{n - 1}).msgSend(void, "removeFromSuperview", .{});
+    }
 
     const mono = appkit.font(theme.fonts.mono, theme.text_size.xs, true);
-    const tabs = [_][:0]const u8{ "~/craft/apps/web", "~/craft/site", "scratch" };
     const label_h: f64 = 18;
+    const count: f64 = @floatFromInt(@max(titles.len, 1));
+    const tab_w: f64 = std.math.clamp(520.0 / count, 80, 150);
     var x: f64 = 3;
-    for (tabs, 0..) |title, i| {
-        const tab_w: f64 = if (i == 0) 150 else 110;
-        if (i == 0) {
-            const pill = appkit.panel(
-                appkit.rect(x, 3, tab_w, group_h - 6),
-                .{ .background = theme.colors.bg_surface_raised, .corner_radius = theme.radius.pill },
-            );
-            appkit.addSubview(group, pill);
-        }
-        // All tab labels share the same frame in group coordinates; the
-        // selected pill is a background, not a separate text layout origin.
-        appkit.addSubview(group, appkit.label(
-            appkit.rect(x + 12, (group_h - label_h) / 2, tab_w - 24, label_h),
+    for (titles, 0..) |title, i| {
+        const is_active = i == active;
+        const item = tabItem(
+            appkit.rect(x, 3, tab_w, tab_group_height - 6),
+            i,
+            .{
+                .background = if (is_active) theme.colors.bg_surface_raised else null,
+                .corner_radius = theme.radius.pill,
+            },
+        );
+        const label = appkit.label(
+            appkit.rect(12, (tab_group_height - 6 - label_h) / 2, tab_w - 24, label_h),
             title,
             mono,
-            if (i == 0) theme.colors.text_primary else theme.colors.text_tertiary,
-        ));
+            if (is_active) theme.colors.text_primary else theme.colors.text_tertiary,
+        );
+        label.msgSend(void, "setLineBreakMode:", .{@as(u64, 4)}); // NSLineBreakByTruncatingTail
+        appkit.addSubview(item, label);
+        appkit.addSubview(group, item);
         x += tab_w;
     }
 
-    const display = appkit.font(theme.fonts.display, theme.text_size.md, false);
-    appkit.addSubview(group, appkit.label(
-        appkit.rect(x + 4, 2, 24, group_h - 8),
+    const plus_w: f64 = 28;
+    const plus = tabItem(appkit.rect(x, 3, plus_w, tab_group_height - 6), plus_index, .{});
+    appkit.addSubview(plus, appkit.label(
+        appkit.rect(0, 0, plus_w, tab_group_height - 8),
         "+",
-        display,
+        appkit.font(theme.fonts.display, theme.text_size.md, false),
         theme.colors.text_tertiary,
     ));
+    appkit.addSubview(group, plus);
+    x += plus_w + 3;
+
+    var frame = group.msgSend(appkit.NSRect, "frame", .{});
+    frame.size.width = x;
+    group.msgSend(void, "setFrame:", .{frame});
+    // The group's corner radius was clamped for its initial zero width.
+    const layer = group.msgSend(objc.Object, "layer", .{});
+    layer.msgSend(void, "setCornerRadius:", .{tab_group_height / 2});
+    layer.msgSend(void, "setMasksToBounds:", .{true});
 }
 
 /// Builds the bottom status bar and adds it to `parent`, pinned to the

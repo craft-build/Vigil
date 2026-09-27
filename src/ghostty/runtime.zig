@@ -4,11 +4,10 @@
 //! on macos/Sources/Ghostty/Ghostty.App.swift's `wakeup`/`action` wiring,
 //! reimplemented against the C API instead of Swift.
 const std = @import("std");
-const objc = @import("objc");
 const c = @import("c.zig").c;
-const appkit = @import("../app/appkit.zig");
 const clipboard = @import("../app/clipboard.zig");
 const TerminalSurface = @import("../app/TerminalSurface.zig").TerminalSurface;
+const Window = @import("../app/Window.zig").Window;
 
 extern "c" var _dispatch_main_q: anyopaque;
 extern "c" fn dispatch_async_f(
@@ -57,19 +56,16 @@ pub const App = struct {
         self.tick();
     }
 
-    // TODO(roadmap): route actions (new_tab, close_tab, set_title, bell,
-    // toggle_fullscreen, ...) into our own window/tab-bar state once
-    // screens 02-06 exist. For this vertical slice we report every action
-    // as unhandled; libghostty logs a warning and otherwise continues fine.
+    /// Tab/window actions are routed into `Window`; anything else is
+    /// reported unhandled, which libghostty tolerates.
     fn action(
         app: c.ghostty_app_t,
         target: c.ghostty_target_s,
         act: c.ghostty_action_s,
     ) callconv(.c) bool {
         _ = app;
-        _ = target;
-        _ = act;
-        return false;
+        const window = Window.instance orelse return false;
+        return window.handleAction(target, act);
     }
 
     fn readClipboard(
@@ -149,13 +145,12 @@ pub const App = struct {
         }
     }
 
-    // TODO(roadmap): with more than one surface, close just the owning
-    // pane/tab. With a single surface, its shell exiting ends the app.
+    /// The surface's shell exited (or it was closed): drop its tab.
     fn closeSurface(userdata: ?*anyopaque, process_alive: bool) callconv(.c) void {
-        _ = userdata;
-        _ = process_alive;
-        const app = appkit.class("NSApplication").msgSend(objc.Object, "sharedApplication", .{});
-        app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
+        _ = process_alive; // TODO(roadmap): confirm before closing a live process.
+        const window = Window.instance orelse return;
+        const ts: *TerminalSurface = @ptrCast(@alignCast(userdata orelse return));
+        window.closeTab(ts);
     }
 
     /// Surface-scoped callbacks receive the `userdata` set on the surface

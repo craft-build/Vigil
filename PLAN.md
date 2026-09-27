@@ -38,23 +38,22 @@ Each should reuse `src/ui/theme.zig`'s tokens and the `appkit.panel`/`appkit.lab
 
 Tracked as `TODO(roadmap)` comments in the source; listed here with more context.
 
-- **`src/ghostty/runtime.zig` `action_cb`**: currently reports every libghostty action as
-  unhandled. Needs to route `new_tab`, `close_tab`, `set_title`, `bell`, `toggle_fullscreen`, etc.
-  into Vigil's own window/tab-bar state — this is the actual wiring needed before tabs/splits (see
-  below) can work, since libghostty drives those via actions, not direct calls.
+- **Action routing / tabs**: done for tabs (`src/app/Window.zig`). `new_tab`, `close_tab` (this
+  tab only), `goto_tab`, `move_tab`, `set_title`/`set_tab_title`, `ring_bell`, `toggle_fullscreen`,
+  `quit`, `close_window` are handled; the tab bar is a live, clickable model. Still unhandled:
+  `new_split`/`goto_split`/etc. (splits), `new_window`, `toggle_command_palette` (Screen 02),
+  `pwd` (could feed the status bar), `desktop_notification`, `open_url`, `config_change`.
 - **Clipboard**: done (`src/app/clipboard.zig`). Plain-text copy/paste via `NSPasteboard`;
   program-initiated access (OSC 52 / kitty) is denied until there's a confirmation prompt UI.
-- **`close_surface_cb`**: currently terminates the app (single surface). Once there's more than
-  one surface (tabs/splits), this needs to actually close the right pane/tab.
+- **`close_surface_cb`**: closes the owning tab (quits on the last). No confirm prompt when a
+  process is still running; splits will need per-pane handling.
 - **Backing scale factor**: done — read from the window/screen at creation, and re-synced on
   resize and `viewDidChangeBackingProperties` (display changes).
 - **Keyboard/mouse input**: `unshifted_codepoint`, mouse buttons/motion (with a tracking area),
   and scrolling (precision + momentum) are done. Still missing: IME/marked-text support
   (`ghostty_surface_preedit` is never called) and mouse pressure/force-touch.
-- **Multiple surfaces**: only one `ghostty_surface_t` ever exists. Real tabs (the tab bar is
-  currently static labels, not functional) and splits (`ghostty_surface_split`) need a
-  `TerminalSurface` per pane and a window/tab-bar model that tracks them, wired through the
-  `action_cb` routing above.
+- **Splits**: tabs exist (one `TerminalSurface` each), but there is no pane layout yet.
+  `ghostty_surface_split` and the split actions need a per-tab pane tree and layout code.
 
 ## Other polish
 

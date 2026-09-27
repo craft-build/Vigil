@@ -28,11 +28,13 @@ pub const TerminalSurface = struct {
 
     /// `app` must already be initialized. `frame` is the view's initial
     /// frame in points; the caller adds the returned view to the window's
-    /// view hierarchy.
+    /// view hierarchy. `inherit` is an existing surface whose settings
+    /// (font size, working directory) the new tab starts from.
     pub fn create(
         allocator: std.mem.Allocator,
         app: ghc.ghostty_app_t,
         frame: appkit.NSRect,
+        inherit: ?ghc.ghostty_surface_t,
     ) !*TerminalSurface {
         const self = try allocator.create(TerminalSurface);
         errdefer allocator.destroy(self);
@@ -47,19 +49,39 @@ pub const TerminalSurface = struct {
         // it as one.
         view.setInstanceVariable("vigilSelf", .{ .value = @ptrCast(self) });
 
-        var cfg = ghc.ghostty_surface_config_new();
+        var cfg = if (inherit) |from|
+            ghc.ghostty_surface_inherited_config(from, ghc.GHOSTTY_SURFACE_CONTEXT_TAB)
+        else blk: {
+            var fresh = ghc.ghostty_surface_config_new();
+            fresh.font_size = 13;
+            fresh.context = ghc.GHOSTTY_SURFACE_CONTEXT_WINDOW;
+            break :blk fresh;
+        };
         cfg.platform_tag = ghc.GHOSTTY_PLATFORM_MACOS;
         cfg.platform = .{ .macos = .{ .nsview = view.value } };
         cfg.userdata = self;
         cfg.scale_factor = backingScale(view);
-        cfg.font_size = 13;
-        cfg.context = ghc.GHOSTTY_SURFACE_CONTEXT_WINDOW;
 
         const surface = ghc.ghostty_surface_new(app, &cfg) orelse
             return error.GhosttySurfaceNewFailed;
 
         self.* = .{ .view = view, .surface = surface };
         return self;
+    }
+
+    /// Recovers the TerminalSurface from a libghostty surface handle
+    /// (via the `userdata` set at creation).
+    pub fn fromHandle(handle: ghc.ghostty_surface_t) ?*TerminalSurface {
+        const ud = ghc.ghostty_surface_userdata(handle) orelse return null;
+        return @ptrCast(@alignCast(ud));
+    }
+
+    /// Shows or hides the tab's view and tells libghostty so it can pause
+    /// rendering for hidden tabs.
+    pub fn setVisible(self: *TerminalSurface, visible: bool) void {
+        self.view.msgSend(void, "setHidden:", .{!visible});
+        ghc.ghostty_surface_set_occlusion(self.surface, visible);
+        ghc.ghostty_surface_set_focus(self.surface, visible);
     }
 
     pub fn destroy(self: *TerminalSurface, allocator: std.mem.Allocator) void {
