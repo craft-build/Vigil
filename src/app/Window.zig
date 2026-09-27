@@ -33,6 +33,10 @@ const Tab = struct {
     surface: *TerminalSurface,
     /// Owned, NUL-terminated.
     title: [:0]u8,
+    /// Set once the user renames the tab by hand; from then on, libghostty's
+    /// own `set_title`/`set_tab_title` actions (from the shell reporting its
+    /// prompt or cwd) no longer overwrite it.
+    manual_title: bool = false,
 };
 
 pub const Window = struct {
@@ -82,6 +86,8 @@ pub const Window = struct {
         };
         instance = self;
         chrome.on_tab_click = onTabClick;
+        chrome.on_tab_double_click = onTabDoubleClick;
+        chrome.on_rename_commit = onRenameCommit;
         chrome.on_settings_click = preferences_window.show;
         keymonitor.install(onKeyEvent);
         palette.on_run = runCommand;
@@ -174,12 +180,43 @@ pub const Window = struct {
         return null;
     }
 
+    /// Applied when libghostty reports a title (shell integration, OSC
+    /// title sequences, ...). Skipped once the tab has a manual name.
     fn setTitle(self: *Window, surface: *TerminalSurface, title: []const u8) void {
         const index = self.indexOf(surface) orelse return;
+        if (self.tabs.items[index].manual_title) return;
         const owned = self.allocator.dupeZ(u8, title) catch return;
         self.allocator.free(self.tabs.items[index].title);
         self.tabs.items[index].title = owned;
         self.refreshTabBar();
+    }
+
+    /// Applied from the tab-bar rename field (double-click a tab). Blank
+    /// text reverts to automatic titles instead of setting an empty name.
+    fn renameTab(self: *Window, index: usize, new_title: []const u8) void {
+        if (index >= self.tabs.items.len) return;
+        const trimmed = std.mem.trim(u8, new_title, " \t");
+        if (trimmed.len == 0) {
+            self.tabs.items[index].manual_title = false;
+            self.refreshTabBar();
+            return;
+        }
+        const owned = self.allocator.dupeZ(u8, trimmed) catch return;
+        self.allocator.free(self.tabs.items[index].title);
+        self.tabs.items[index].title = owned;
+        self.tabs.items[index].manual_title = true;
+        self.refreshTabBar();
+    }
+
+    fn onTabDoubleClick(index: usize) void {
+        const self = instance orelse return;
+        if (index >= self.tabs.items.len) return;
+        chrome.beginRename(index, self.tabs.items[index].title);
+    }
+
+    fn onRenameCommit(index: usize, text: []const u8) void {
+        const self = instance orelse return;
+        self.renameTab(index, text);
     }
 
     fn onTabClick(index: usize) void {
@@ -206,6 +243,17 @@ pub const Window = struct {
         }
         const mods = keymonitor.modifiers(event);
         const code = keymonitor.keyCode(event);
+
+        // A tab rename in progress takes priority: only Esc is ours to
+        // handle (cancels it); every other key must reach the field editor
+        // normally (typing, Return-to-commit, ...).
+        if (chrome.isRenaming()) {
+            if (mods == .none and code == keymonitor.key_escape) {
+                chrome.cancelRename();
+                return true;
+            }
+            return false;
+        }
 
         if (mods == .command and code == keymonitor.key_slash) {
             palette.hide();

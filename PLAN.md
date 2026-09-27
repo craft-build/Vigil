@@ -83,6 +83,14 @@ Tracked as `TODO(roadmap)` comments in the source; listed here with more context
   `quit`, `close_window` are handled; the tab bar is a live, clickable model. Still unhandled:
   `new_split`/`goto_split`/etc. (splits), `new_window`, `toggle_command_palette` (Screen 02),
   `pwd` (could feed the status bar), `desktop_notification`, `open_url`, `config_change`.
+- **Tab titles**: done. `set_title`/`set_tab_title` (shell integration, OSC title sequences) update
+  the tab live; double-clicking a tab pill opens an inline `NSTextField` to rename it by hand
+  (Return or clicking away commits, Esc cancels, blank text reverts to automatic). A manually
+  renamed tab stops accepting automatic updates (`Tab.manual_title` in `Window.zig`) until renamed
+  blank again. Caught in testing: removing the rename field while it's still the active first
+  responder makes AppKit resign it, which re-fires its commit action reentrantly (real path: our
+  own `populateTabs` cleanup, not something a real Return keypress should hit, but guarded either
+  way) -- see `handling_end` in `src/ui/chrome.zig`.
 - **Clipboard**: done (`src/app/clipboard.zig`). Plain-text copy/paste via `NSPasteboard`;
   program-initiated access (OSC 52 / kitty) is denied until there's a confirmation prompt UI.
 - **`close_surface_cb`**: closes the owning tab (quits on the last). No confirm prompt when a

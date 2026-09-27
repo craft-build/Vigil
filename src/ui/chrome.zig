@@ -44,6 +44,14 @@ pub const plus_index: usize = 1 << 30;
 /// `plus_index`) is clicked.
 pub var on_tab_click: ?*const fn (index: usize) void = null;
 
+/// Called when a tab pill (never the "+" item) is double-clicked -- starts a
+/// rename. See `beginRename`.
+pub var on_tab_double_click: ?*const fn (index: usize) void = null;
+
+/// Called when an in-progress rename is committed (Return, or clicking away
+/// -- `NSTextField`'s usual "end editing" triggers), with the field's text.
+pub var on_rename_commit: ?*const fn (index: usize, text: []const u8) void = null;
+
 var tab_item_class: ?objc.Class = null;
 
 fn tabItemClass() objc.Class {
@@ -71,12 +79,18 @@ fn tabItemHitTest(id: objc.c.id, sel: objc.c.SEL, point: appkit.NSPoint) callcon
     return if (hit.value != null) id else null;
 }
 
-fn tabItemMouseDown(id: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+fn tabItemMouseDown(id: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const stored = (objc.Object{ .value = id }).getInstanceVariable("vigilIndex");
     const raw = @intFromPtr(stored.value);
     if (raw == 0) return;
     // Stored shifted so the fake "pointer" is aligned (see `tabItem`).
-    if (on_tab_click) |cb| cb((raw >> 4) - 1);
+    const index = (raw >> 4) - 1;
+    if (on_tab_click) |cb| cb(index);
+
+    const click_count = (objc.Object{ .value = event }).msgSend(i64, "clickCount", .{});
+    if (click_count >= 2 and index != plus_index) {
+        if (on_tab_double_click) |cb| cb(index);
+    }
 }
 
 fn tabItem(frame: appkit.NSRect, index: usize, style: appkit.LayerStyle) objc.Object {
@@ -137,6 +151,9 @@ fn addSettingsButton(bar: objc.Object, bar_width: f64) void {
 }
 
 pub const TabBar = struct {
+    /// The bar itself -- the rename field is added here (not to `group`,
+    /// which `populateTabs` clears and rebuilds on every call).
+    bar: objc.Object,
     group: objc.Object,
 };
 
@@ -164,13 +181,29 @@ pub fn buildTabBar(parent: objc.Object, width: f64, height: f64) TabBar {
     );
     appkit.addSubview(bar, group);
     addSettingsButton(bar, width);
-    return .{ .group = group };
+    const result = TabBar{ .bar = bar, .group = group };
+    current_bar = result;
+    return result;
 }
 
 const tab_group_height: f64 = 30;
 
+/// One entry in the tab bar; a singleton since there is only ever one
+/// window, cached so `beginRename` can locate a pill without `Window`
+/// having to hand back its own bar reference on every call.
+var current_bar: ?TabBar = null;
+
+/// The frame (in `group`'s coordinate space) of each pill from the most
+/// recent `populateTabs`, indexed like `titles` was. Used by `beginRename`
+/// to place the rename field over the right pill.
+var tab_item_frames: [64]appkit.NSRect = undefined;
+var tab_item_count: usize = 0;
+
 /// Replaces the pills in `bar` with one per title, highlighting `active`.
 pub fn populateTabs(bar: TabBar, titles: []const [:0]const u8, active: usize) void {
+    // The pill layout is about to change under any in-progress rename field
+    // (which lives on `bar.bar`, so it would otherwise survive misplaced).
+    endRename();
     const group = bar.group;
     const subviews = group.msgSend(objc.Object, "subviews", .{});
     // Iterate over a copy: removing from the live array while walking it skips items.
@@ -227,6 +260,98 @@ pub fn populateTabs(bar: TabBar, titles: []const [:0]const u8, active: usize) vo
     const layer = group.msgSend(objc.Object, "layer", .{});
     layer.msgSend(void, "setCornerRadius:", .{tab_group_height / 2});
     layer.msgSend(void, "setMasksToBounds:", .{true});
+
+    tab_item_count = @min(titles.len, tab_item_frames.len);
+    for (0..tab_item_count) |i| tab_item_frames[i] = appkit.rect(3 + @as(f64, @floatFromInt(i)) * tab_w, 3, tab_w, tab_group_height - 6);
 }
 
+// -- inline rename ------------------------------------------------------------
 
+var rename_field: ?objc.Object = null;
+var rename_target_obj: ?objc.Object = null;
+var rename_target_class: ?objc.Class = null;
+/// True only while `endRename` is detaching the field. Removing a view that
+/// is still the window's first responder makes AppKit resign it right there,
+/// which -- since the field has `sendsActionOnEndEditing` -- re-fires
+/// `renameCommit:` synchronously, reentrantly, with a title string the outer
+/// call is still holding a (soon to be freed) pointer to. This flag makes
+/// that reentrant fire (commit *or* cancel) a no-op instead of a use-after-free.
+var handling_end = false;
+
+pub fn isRenaming() bool {
+    return rename_field != null;
+}
+
+/// Overlays an editable text field on tab `index`'s pill, pre-filled with
+/// `current_title` and with all of it selected. Ends any rename already in
+/// progress first.
+pub fn beginRename(index: usize, current_title: [:0]const u8) void {
+    const bar = current_bar orelse return;
+    if (index >= tab_item_count) return;
+    endRename();
+
+    // Stored frames are in `group`'s coordinate space; the field itself is
+    // added to `bar` so rebuilding `group`'s pills can't sweep it away.
+    const frame = bar.group.msgSend(appkit.NSRect, "convertRect:toView:", .{ tab_item_frames[index], bar.bar });
+
+    const field = appkit.class("NSTextField").msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "initWithFrame:", .{frame});
+    field.msgSend(void, "setBezeled:", .{false});
+    field.msgSend(void, "setDrawsBackground:", .{true});
+    field.msgSend(void, "setBackgroundColor:", .{appkit.nsColor(theme.colors.bg_surface_overlay)});
+    field.msgSend(void, "setFont:", .{appkit.font(theme.fonts.mono, theme.text_size.xs, true)});
+    field.msgSend(void, "setTextColor:", .{appkit.nsColor(theme.colors.text_primary)});
+    field.msgSend(void, "setStringValue:", .{appkit.nsString(current_title)});
+    field.msgSend(objc.Object, "cell", .{}).msgSend(void, "setSendsActionOnEndEditing:", .{true});
+    field.msgSend(void, "setTarget:", .{renameTarget()});
+    field.msgSend(void, "setAction:", .{objc.sel("renameCommit:").value});
+    field.msgSend(void, "setTag:", .{@as(i64, @intCast(index))});
+    appkit.addSubview(bar.bar, field);
+
+    const window = bar.bar.msgSend(objc.Object, "window", .{});
+    window.msgSend(void, "makeFirstResponder:", .{field});
+    window.msgSend(objc.Object, "fieldEditor:forObject:", .{ true, field })
+        .msgSend(void, "selectAll:", .{@as(?*anyopaque, null)});
+
+    rename_field = field;
+}
+
+/// Discards an in-progress rename without committing it.
+pub fn cancelRename() void {
+    endRename();
+}
+
+fn endRename() void {
+    const f = rename_field orelse return;
+    rename_field = null; // clear first: see `handling_end` above
+    handling_end = true;
+    f.msgSend(void, "removeFromSuperview", .{});
+    handling_end = false;
+}
+
+fn renameTarget() objc.Object {
+    if (rename_target_obj) |t| return t;
+    const t = renameTargetClass().msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
+    rename_target_obj = t;
+    return t;
+}
+
+fn renameTargetClass() objc.Class {
+    if (rename_target_class) |cls| return cls;
+    const cls = objc.allocateClassPair(appkit.class("NSObject"), "VigilTabRenameTarget") orelse
+        @panic("failed to register VigilTabRenameTarget");
+    std.debug.assert(cls.addMethod("renameCommit:", renameCommit));
+    objc.registerClassPair(cls);
+    rename_target_class = cls;
+    return cls;
+}
+
+fn renameCommit(_: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) void {
+    if (handling_end) return; // see `handling_end`
+    const field = objc.Object{ .value = sender };
+    const tag = field.msgSend(i64, "tag", .{});
+    if (tag < 0) return;
+    const str = field.msgSend(objc.Object, "stringValue", .{});
+    const text = std.mem.span(str.msgSend([*:0]const u8, "UTF8String", .{}));
+    if (on_rename_commit) |cb| cb(@intCast(tag), text);
+}
