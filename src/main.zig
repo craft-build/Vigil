@@ -8,6 +8,7 @@ const GhosttyApp = @import("ghostty/runtime.zig").App;
 const appkit = @import("app/appkit.zig");
 const Window = @import("app/Window.zig").Window;
 const keybindings = @import("app/keybindings.zig");
+const settings = @import("app/settings.zig");
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
@@ -21,9 +22,8 @@ pub fn main() !void {
         return error.GhosttyInitFailed;
     }
 
-    const config = ghc.ghostty_config_new() orelse return error.GhosttyConfigNewFailed;
-    ghc.ghostty_config_load_default_files(config);
-    ghc.ghostty_config_finalize(config);
+    settings.load();
+    const config = settings.buildConfig() orelse return error.GhosttyConfigNewFailed;
 
     keybindings.init(config);
 
@@ -43,5 +43,7 @@ pub fn main() !void {
 
 test {
     _ = keybindings;
+    _ = @import("app/settings.zig");
+    _ = @import("app/themes.zig");
     _ = @import("ui/palette.zig");
 }

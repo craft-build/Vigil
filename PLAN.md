@@ -28,8 +28,25 @@ Each should reuse `src/ui/theme.zig`'s tokens and the `appkit.panel`/`appkit.lab
   live in the registry alongside libghostty actions. Known limits: the query is drawn by hand
   (no NSTextField), so no IME, paste or mid-string editing; there's no "Recent" section (needs
   usage tracking); running a command with a live process is unguarded.
-- **Screen 03 — Theme gallery**: six palette cards. Wire selection to real libghostty config —
-  `ghostty_surface_update_config` / `ghostty_config_t` palette fields — not just a visual swap.
+- **Screen 03 — Theme gallery**: done (`src/ui/theme_gallery.zig`, `src/app/themes.zig`). Six
+  built-in palettes (Vigil Midnight, Tokyo Night, Nord, Dracula, Gruvbox Dark, Solarized Dark —
+  chosen by me; swap in the prototype's six if they differ) written as real config keys
+  (`background`, `foreground`, `cursor-color`, `selection-*`, `palette = N=#hex`). Opened from the
+  palette ("Choose theme…"; no dedicated shortcut yet); clicking a card or ↩ applies it live.
+  Verified: applying a theme writes the overrides file and a rebuilt config reports the new
+  background. Not covered: themes other than these six (e.g. ghostty's bundled `theme =` files,
+  which need the resources dir) and light/dark auto-switching.
+
+## Config layer (`src/app/settings.zig`)
+
+Vigil-owned settings live in `~/Library/Application Support/Vigil/config` (ghostty `key = value`
+syntax), loaded after the user's own Ghostty config so Vigil wins. Changing a setting =
+`store` edit → `save()` → `apply(app)` (`ghostty_app_update_config`, which updates every
+surface). `⇧⌘,` (`reload_config`) re-reads the file. Screen 04 (preferences) should build on this:
+add a setter per control, call `settings.save()` + `settings.apply(app)`. Limits: configs handed
+to libghostty are never freed (small leak per change); a hand-edited overrides file loses
+comments on the next save.
+
 - **Screen 04 — Preferences**: a settings sidebar (General/Appearance/Text/Keybindings/Shell)
   next to a rows-and-controls panel. Wire controls to real config: cursor style, background
   opacity/blur, font family/size, ligatures. Check `ghostty_config_get`/`ghostty_surface_update_config`

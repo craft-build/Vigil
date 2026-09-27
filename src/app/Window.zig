@@ -14,6 +14,9 @@ const chrome = @import("../ui/chrome.zig");
 const theme = @import("../ui/theme.zig");
 const shortcuts_sheet = @import("../ui/shortcuts_sheet.zig");
 const palette = @import("../ui/palette.zig");
+const theme_gallery = @import("../ui/theme_gallery.zig");
+const settings = @import("settings.zig");
+const themes = @import("themes.zig");
 const keybindings = @import("keybindings.zig");
 const keymonitor = @import("keymonitor.zig");
 
@@ -89,6 +92,7 @@ pub const Window = struct {
         chrome.on_tab_click = onTabClick;
         keymonitor.install(onKeyEvent);
         palette.on_run = runCommand;
+        theme_gallery.on_select = applyTheme;
 
         try self.newTab(null);
         return self;
@@ -203,10 +207,12 @@ pub const Window = struct {
 
         if (mods == .command and code == keymonitor.key_slash) {
             palette.hide();
+            theme_gallery.hide();
             shortcuts_sheet.toggle(self.content);
             return true;
         }
         if (palette.isVisible()) return palette.handleKey(event);
+        if (theme_gallery.isVisible()) return theme_gallery.handleKey(event);
         if (!shortcuts_sheet.isVisible()) return false;
         if (mods == .none and code == keymonitor.key_escape) {
             shortcuts_sheet.hide();
@@ -222,9 +228,21 @@ pub const Window = struct {
         const self = instance orelse return;
         if (cmd.vigil) |action| switch (action) {
             .show_shortcuts => shortcuts_sheet.show(self.content),
+            .show_themes => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
         } else {
             _ = keybindings.perform(self.tabs.items[self.active].surface.surface, cmd);
         }
+    }
+
+    /// Writes the theme into Vigil's config, saves it, and pushes the new
+    /// config to every surface.
+    fn applyTheme(index: usize) void {
+        const self = instance orelse return;
+        if (index >= themes.themes.len) return;
+        themes.write(&settings.store, std.heap.c_allocator, themes.themes[index]) catch return;
+        settings.save();
+        settings.apply(self.app);
+        theme_gallery.setApplied(index);
     }
 
     // -- libghostty action routing ---------------------------------------
@@ -272,10 +290,17 @@ pub const Window = struct {
                 return true;
             },
             ghc.GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE => {
-                if (shortcuts_sheet.isVisible()) return true;
+                if (shortcuts_sheet.isVisible() or theme_gallery.isVisible()) return true;
                 palette.toggle(self.content);
                 return true;
             },
+            ghc.GHOSTTY_ACTION_RELOAD_CONFIG => {
+                // Re-read Vigil's overrides from disk, then rebuild everything.
+                settings.load();
+                settings.apply(self.app);
+                return true;
+            },
+            ghc.GHOSTTY_ACTION_CONFIG_CHANGE => return true, // applied by libghostty itself
             ghc.GHOSTTY_ACTION_RING_BELL => {
                 appkit.class("NSSound").msgSend(void, "beep", .{});
                 return true;

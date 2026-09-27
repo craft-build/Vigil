@@ -27,7 +27,7 @@ pub const Group = enum {
 };
 
 /// Commands Vigil implements itself rather than delegating to libghostty.
-pub const VigilAction = enum { show_shortcuts };
+pub const VigilAction = enum { show_shortcuts, show_themes };
 
 pub const Command = struct {
     title: []const u8,
@@ -68,6 +68,7 @@ pub const commands = [_]Command{
     .{ .title = "Increase font size", .group = .view, .action = "increase_font_size:1" },
     .{ .title = "Decrease font size", .group = .view, .action = "decrease_font_size:1" },
     .{ .title = "Reset font size", .group = .view, .action = "reset_font_size" },
+    .{ .title = "Choose theme\u{2026}", .group = .view, .action = "", .vigil = .show_themes },
     .{ .title = "Toggle full screen", .group = .view, .action = "toggle_fullscreen" },
 
     .{ .title = "Command palette", .group = .app, .action = "toggle_command_palette", .in_palette = false },
