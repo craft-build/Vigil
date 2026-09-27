@@ -85,7 +85,12 @@ fn tabItemMouseDown(id: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) voi
 fn tabItem(frame: appkit.NSRect, index: usize, style: appkit.LayerStyle) objc.Object {
     const item = tabItemClass().msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "initWithFrame:", .{frame});
-    appkit.styleLayer(appkit.layerBacked(item), style);
+    // `radius.pill` is a "make it a capsule" sentinel, not a real radius; like
+    // `appkit.panel`, clamp it to half the height or the layer mask clips
+    // the item's contents away.
+    var clamped = style;
+    clamped.corner_radius = @min(clamped.corner_radius, @min(frame.size.width, frame.size.height) / 2);
+    appkit.styleLayer(appkit.layerBacked(item), clamped);
     item.setInstanceVariable("vigilIndex", .{ .value = @ptrFromInt((index + 1) << 4) });
     return item;
 }
@@ -162,6 +167,7 @@ pub fn populateTabs(bar: TabBar, titles: []const [:0]const u8, active: usize) vo
     }
 
     const plus_w: f64 = 28;
+    x += 4; // breathing room after the last pill
     const plus = tabItem(appkit.rect(x, 3, plus_w, tab_group_height - 6), plus_index, .{});
     appkit.addSubview(plus, appkit.label(
         appkit.rect(0, 0, plus_w, tab_group_height - 8),
