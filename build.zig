@@ -68,6 +68,11 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run Vigil");
     run_step.dependOn(&run_cmd.step);
+
+    const tests = b.addTest(.{ .root_module = exe_mod });
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tests.step);
 }
 
 /// The xcframework contains one directory per platform slice, e.g.

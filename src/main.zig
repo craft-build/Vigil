@@ -7,6 +7,7 @@ const ghc = @import("ghostty/c.zig").c;
 const GhosttyApp = @import("ghostty/runtime.zig").App;
 const appkit = @import("app/appkit.zig");
 const Window = @import("app/Window.zig").Window;
+const keybindings = @import("app/keybindings.zig");
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
@@ -24,6 +25,8 @@ pub fn main() !void {
     ghc.ghostty_config_load_default_files(config);
     ghc.ghostty_config_finalize(config);
 
+    keybindings.init(config);
+
     var app: GhosttyApp = .{};
     try app.init(config);
     defer app.deinit();
@@ -36,4 +39,8 @@ pub fn main() !void {
     window.show();
     NSApp.msgSend(void, "activateIgnoringOtherApps:", .{true});
     NSApp.msgSend(void, "run", .{});
+}
+
+test {
+    _ = keybindings;
 }

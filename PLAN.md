@@ -11,6 +11,11 @@ status bar with a live status pill. See `README.md` for build/run instructions a
 
 Everything below is not built yet.
 
+## Testing
+
+`zig build test` runs unit tests (currently the keybinding registry, including one against a
+real default libghostty config).
+
 ## Screens 02–06 (prototype UI not yet implemented)
 
 Each should reuse `src/ui/theme.zig`'s tokens and the `appkit.panel`/`appkit.label` helpers in
@@ -31,8 +36,13 @@ Each should reuse `src/ui/theme.zig`'s tokens and the `appkit.panel`/`appkit.lab
   The import path needs to actually read the user's existing shell profile (zsh/bash/fish) —
   scope what "import" means concretely before implementing.
 - **Screen 06 — Keyboard shortcuts sheet**: `⌘/` toggles a floating reference panel. Should
-  reflect Vigil's *actual* keybindings, not just static prototype copy — implies keybindings need
-  to be centrally defined first rather than hardcoded per-feature.
+  reflect Vigil's *actual* keybindings, not just static prototype copy. The registry it needs now
+  exists: `src/app/keybindings.zig` lists commands and resolves each one's shortcut from the live
+  libghostty config (so user `keybind` overrides show), with `format` for ⌘⇧T-style glyphs and
+  `perform` to run one. Remaining for this screen: the panel UI and the `⌘/` toggle. Vigil-owned
+  shortcuts (⌘K palette, ⌘/) aren't libghostty actions, so they'll need a small static entry type
+  alongside the existing `Command` when those screens land. ⌘K is unbound by default in
+  libghostty's config, so it's free for the palette.
 
 ## Terminal engine integration gaps
 
