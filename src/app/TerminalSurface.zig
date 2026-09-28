@@ -29,21 +29,40 @@ pub const TerminalSurface = struct {
     /// sibling before its own first layout pass. Meaningless until the
     /// first layout after creation sets it for real.
     last_frame: appkit.NSRect = std.mem.zeroes(appkit.NSRect),
+    /// The `*Window` this surface belongs to, as an opaque pointer so this
+    /// file doesn't need to import `Window.zig` (which imports this file) --
+    /// every reader casts it back with the type it already knows. Set by
+    /// `Window.newTab`/`newSplit` right after `create` returns; used to
+    /// route libghostty's per-surface callbacks (click, close, actions) to
+    /// the right window now that more than one can exist.
+    owner: ?*anyopaque = null,
 
     var registered_class: ?objc.Class = null;
 
     /// `app` must already be initialized. `frame` is the view's initial
     /// frame in points; the caller adds the returned view to the window's
     /// view hierarchy. `inherit` is an existing surface whose settings
-    /// (font size, working directory) the new tab starts from.
+    /// (font size, working directory) the new tab starts from. `owner` is
+    /// the `*Window` this surface belongs to (opaque here -- see the
+    /// `owner` field's doc comment).
     pub fn create(
         allocator: std.mem.Allocator,
         app: ghc.ghostty_app_t,
         frame: appkit.NSRect,
         inherit: ?ghc.ghostty_surface_t,
+        owner: ?*anyopaque,
     ) !*TerminalSurface {
         const self = try allocator.create(TerminalSurface);
         errdefer allocator.destroy(self);
+        // Set before `ghostty_surface_new` below, not after: libghostty can
+        // reenter our action/clipboard callbacks with this surface's
+        // `userdata` before that call even returns (e.g. `Window.newTab`'s
+        // very first surface, mid-construction of both the surface and its
+        // window) -- see `handleAction`'s "actions can arrive mid-creation"
+        // comment. Those callbacks resolve their `*Window` from `.owner`,
+        // so it has to be valid already; the rest of `self` isn't read by
+        // them and can be filled in once `ghostty_surface_new` succeeds.
+        self.owner = owner;
 
         const cls = viewClass();
         const view = cls.msgSend(objc.Object, "alloc", .{})
@@ -71,7 +90,7 @@ pub const TerminalSurface = struct {
         const surface = ghc.ghostty_surface_new(app, &cfg) orelse
             return error.GhosttySurfaceNewFailed;
 
-        self.* = .{ .view = view, .surface = surface, .last_frame = frame };
+        self.* = .{ .view = view, .surface = surface, .last_frame = frame, .owner = owner };
         return self;
     }
 

@@ -154,7 +154,7 @@ fn buildCard(t: themes.Theme, index: usize, x: f64, y: f64) objc.Object {
 
     const card = Card.view(appkit.rect(x, y, card_w, card_h), index, .{
         .background = theme.colors.bg_surface,
-        .border = if (is_focus) theme.colors.blue_500 else theme.colors.border_default,
+        .border = if (is_focus) theme.colors.accent else theme.colors.border_default,
         .border_width = if (is_focus) 2 else 1,
         .corner_radius = theme.radius.md,
     });
@@ -196,7 +196,7 @@ fn buildCard(t: themes.Theme, index: usize, x: f64, y: f64) objc.Object {
             appkit.rect(card_w - 32, 10, 20, 18),
             "\u{2713}",
             appkit.font(theme.fonts.body, theme.text_size.sm, false),
-            theme.colors.green_500,
+            theme.colors.success,
         );
         appkit.setAlignment(check, .right);
         appkit.addSubview(card, check);

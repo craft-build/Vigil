@@ -148,6 +148,11 @@ fn configPath(buf: []u8) ?[:0]const u8 {
     return std.fmt.bufPrintZ(buf, "{s}/Library/Application Support/Vigil/config", .{std.mem.span(home)}) catch null;
 }
 
+fn uiConfigPath(buf: []u8) ?[:0]const u8 {
+    const home = std.c.getenv("HOME") orelse return null;
+    return std.fmt.bufPrintZ(buf, "{s}/Library/Application Support/Vigil/ui-config", .{std.mem.span(home)}) catch null;
+}
+
 fn readFile(path: [:0]const u8) ?[]u8 {
     const fd = open(path.ptr, O_RDONLY);
     if (fd < 0) return null;
@@ -166,28 +171,30 @@ fn readFile(path: [:0]const u8) ?[]u8 {
     return out.toOwnedSlice(allocator) catch null;
 }
 
-/// Loads Vigil's overrides file into `store` (no file yet is fine).
-pub fn load() void {
-    var buf: [1024]u8 = undefined;
-    const path = configPath(&buf) orelse return;
+/// Vigil-only preferences that aren't real libghostty keys (currently just
+/// "vigil-vertical-tabs"). Kept in their own store/file (`ui_store`,
+/// `ui-config`) so they never reach `ghostty_config_load_file`, which is
+/// libghostty's own strict parser and logs an "unknown field" diagnostic
+/// for anything it doesn't recognize.
+pub var ui_store: Store = .{};
+
+fn loadInto(target: *Store, path: [:0]const u8) void {
     const text = readFile(path) orelse return;
     defer allocator.free(text);
-    store.parse(allocator, text) catch |err| log.warn("could not parse {s}: {s}", .{ path, @errorName(err) });
+    target.parse(allocator, text) catch |err| log.warn("could not parse {s}: {s}", .{ path, @errorName(err) });
 }
 
-/// Writes `store` to disk (temp file + rename, so a crash can't leave a
+/// Writes `target` to `path` (temp file + rename, so a crash can't leave a
 /// half-written config).
-pub fn save() void {
+fn saveFrom(target: *const Store, path: [:0]const u8) void {
     var dir_buf: [1024]u8 = undefined;
-    var path_buf: [1024]u8 = undefined;
     var tmp_buf: [1032]u8 = undefined;
     const dir = dirPath(&dir_buf) orelse return;
-    const path = configPath(&path_buf) orelse return;
     const tmp = std.fmt.bufPrintZ(&tmp_buf, "{s}.tmp", .{path}) catch return;
 
     _ = mkdir(dir.ptr, 0o755); // already existing is fine
 
-    const text = store.serialize(allocator) catch return;
+    const text = target.serialize(allocator) catch return;
     defer allocator.free(text);
 
     const fd = open(tmp.ptr, O_WRONLY | O_CREAT | O_TRUNC, @as(c_uint, 0o644));
@@ -205,6 +212,53 @@ pub fn save() void {
     if (written != text.len or rename(tmp.ptr, path.ptr) != 0) {
         log.warn("could not save {s}", .{path});
     }
+}
+
+/// Loads Vigil's overrides file into `store` (no file yet is fine), the
+/// UI-only preferences file into `ui_store`, and migrates any Vigil-only
+/// keys an earlier build left in `store` into `ui_store`.
+pub fn load() void {
+    var buf: [1024]u8 = undefined;
+    if (configPath(&buf)) |path| loadInto(&store, path);
+    var ui_buf: [1024]u8 = undefined;
+    if (uiConfigPath(&ui_buf)) |path| loadInto(&ui_store, path);
+    if (migrateUiKeys()) {
+        save();
+        saveUi();
+    }
+}
+
+/// Writes `store` to disk. See `load`'s doc comment for why this file
+/// never holds Vigil-only keys.
+pub fn save() void {
+    var buf: [1024]u8 = undefined;
+    const path = configPath(&buf) orelse return;
+    saveFrom(&store, path);
+}
+
+/// Writes `ui_store` to disk.
+pub fn saveUi() void {
+    var buf: [1024]u8 = undefined;
+    const path = uiConfigPath(&buf) orelse return;
+    saveFrom(&ui_store, path);
+}
+
+/// Keys that used to be written straight into the ghostty-parsed config
+/// file by mistake. Extend this list if another Vigil-only key is added.
+const ui_only_keys = [_][]const u8{"vigil-vertical-tabs"};
+
+/// Moves any of `ui_only_keys` found in `store` into `ui_store` (unless
+/// already migrated) and removes them from `store`. Returns true if either
+/// store changed, so the caller knows to re-save.
+fn migrateUiKeys() bool {
+    var changed = false;
+    for (ui_only_keys) |key| {
+        const value = store.get(key) orelse continue;
+        if (ui_store.get(key) == null) ui_store.set(allocator, key, value) catch continue;
+        store.remove(allocator, key);
+        changed = true;
+    }
+    return changed;
 }
 
 // -- building and applying configs ------------------------------------------

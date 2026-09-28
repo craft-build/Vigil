@@ -227,7 +227,7 @@ fn buildSearchRow(panel: objc.Object, panel_h: f64) void {
         appkit.rect(20, y + 15, 20, 22),
         ">",
         appkit.font(theme.fonts.mono, theme.text_size.md, true),
-        theme.colors.blue_400,
+        theme.colors.accent_hover,
     ));
 
     if (query_len == 0) {

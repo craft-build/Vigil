@@ -188,6 +188,13 @@ fn buildPane() void {
     }
 }
 
+fn storeFor(setting: prefs.Setting) *settings.Store {
+    return switch (setting.target) {
+        .ghostty => &settings.store,
+        .ui => &settings.ui_store,
+    };
+}
+
 fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pane_w: f64) void {
     appkit.addSubview(view, appkit.panel(
         appkit.rect(pane_pad, y + row_h - 1, pane_w - 2 * pane_pad, 1),
@@ -226,7 +233,7 @@ fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pan
             sw.msgSend(void, "sizeToFit", .{});
             const sw_size = sw.msgSend(appkit.NSRect, "frame", .{}).size;
             sw.msgSend(void, "setFrame:", .{appkit.rect(right - sw_size.width, y + (row_h - sw_size.height) / 2, sw_size.width, sw_size.height)});
-            sw.msgSend(void, "setState:", .{@as(i64, @intFromBool(setting.read.?(&settings.store).on))});
+            sw.msgSend(void, "setState:", .{@as(i64, @intFromBool(setting.read.?(storeFor(setting)).on))});
             wire(sw, index);
             appkit.addSubview(view, sw);
         },
@@ -243,12 +250,12 @@ fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pan
                 .{ array, @as(i64, 0), target, objc.sel("changed:").value },
             );
             seg.msgSend(void, "setFrame:", .{appkit.rect(right - control_w, cy, control_w, 28)});
-            seg.msgSend(void, "setSelectedSegment:", .{@as(i64, @intCast(setting.read.?(&settings.store).index))});
+            seg.msgSend(void, "setSelectedSegment:", .{@as(i64, @intCast(setting.read.?(storeFor(setting)).index))});
             seg.msgSend(void, "setTag:", .{@as(i64, @intCast(index))});
             appkit.addSubview(view, seg);
         },
         .slider => |range| {
-            const value = setting.read.?(&settings.store).number;
+            const value = setting.read.?(storeFor(setting)).number;
             const slider = appkit.class("NSSlider").msgSend(objc.Object, "alloc", .{})
                 .msgSend(objc.Object, "initWithFrame:", .{appkit.rect(right - 160, cy + 4, 160, 20)});
             slider.msgSend(void, "setMinValue:", .{range.min});
@@ -261,7 +268,7 @@ fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pan
             addValueLabel(view, index, right - 160 - 52, cy + 5, setting, value);
         },
         .stepper => |range| {
-            const value = setting.read.?(&settings.store).number;
+            const value = setting.read.?(storeFor(setting)).number;
             const stepper = appkit.class("NSStepper").msgSend(objc.Object, "alloc", .{})
                 .msgSend(objc.Object, "initWithFrame:", .{appkit.rect(right - 19, cy, 19, 28)});
             stepper.msgSend(void, "setMinValue:", .{range.min});
@@ -280,7 +287,7 @@ fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pan
             field.msgSend(void, "setEditable:", .{true});
             field.msgSend(void, "setFont:", .{appkit.font(theme.fonts.mono, theme.text_size.xs, true)});
             var buf: [256:0]u8 = undefined;
-            const current_text = setting.read.?(&settings.store).text;
+            const current_text = setting.read.?(storeFor(setting)).text;
             const shown = std.fmt.bufPrintZ(&buf, "{s}", .{current_text}) catch "";
             field.msgSend(void, "setStringValue:", .{appkit.nsString(shown)});
             field.msgSend(void, "setPlaceholderString:", .{appkit.nsString("System default")});
@@ -385,8 +392,11 @@ fn changed(_: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) void {
         .info => return,
     }
 
-    setting.write.?(&settings.store, std.heap.c_allocator, value) catch return;
-    settings.save();
+    setting.write.?(storeFor(setting), std.heap.c_allocator, value) catch return;
+    switch (setting.target) {
+        .ghostty => settings.save(),
+        .ui => settings.saveUi(),
+    }
     if (value_labels[index]) |label| setValueText(label, setting, value.number);
     if (on_change) |cb| cb();
 }

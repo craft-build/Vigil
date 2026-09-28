@@ -85,6 +85,19 @@ pub fn addSubview(parent: objc.Object, child: objc.Object) void {
     parent.msgSend(void, "addSubview:", .{child});
 }
 
+/// Removes every subview of `view`. Used before rebuilding a container's
+/// contents wholesale (tab pills, sidebar rows, ...).
+pub fn removeAllSubviews(view: objc.Object) void {
+    const subviews = view.msgSend(objc.Object, "subviews", .{});
+    // Iterate over a copy: removing from the live array while walking it skips items.
+    const copy = subviews.msgSend(objc.Object, "copy", .{});
+    defer copy.msgSend(void, "release", .{});
+    var n = copy.msgSend(u64, "count", .{});
+    while (n > 0) : (n -= 1) {
+        copy.msgSend(objc.Object, "objectAtIndex:", .{n - 1}).msgSend(void, "removeFromSuperview", .{});
+    }
+}
+
 /// Looks up `family` at `size`; falls back to a system font in the same
 /// voice if it isn't installed. The prototype's Space Grotesk / IBM Plex
 /// fonts are Google Fonts pulled in over CSS in the browser mockup -- they

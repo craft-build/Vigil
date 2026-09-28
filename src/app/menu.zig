@@ -94,6 +94,7 @@ fn buildAppMenu() objc.Object {
 
 fn buildFileMenu() objc.Object {
     const menu = newMenu("File");
+    commandItem(menu, "New window", "New Window");
     commandItem(menu, "New tab", "New Tab");
     addSeparator(menu);
     commandItem(menu, "Split right", "Split Right");
@@ -239,11 +240,12 @@ const Shortcut = struct {
 /// `keybind` override shows up here too, not just Vigil's defaults.
 fn shortcutFor(cmd: keybindings.Command) Shortcut {
     if (cmd.vigil) |v| return switch (v) {
-        // Vigil owns these three, so there's no libghostty trigger to read;
+        // Vigil owns these, so there's no libghostty trigger to read;
         // mirror `Command.fallback_keys` (show_themes has none).
         .show_preferences => .{ .key_char = ',', .mask = mod_command },
         .show_shortcuts => .{ .key_char = '/', .mask = mod_command },
         .show_themes => .{},
+        .new_window => .{ .key_char = 'n', .mask = mod_command },
     };
     if (keybindings.lookup(cmd)) |trigger| {
         if (fromTrigger(trigger)) |sc| return sc;

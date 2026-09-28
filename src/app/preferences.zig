@@ -49,6 +49,11 @@ pub const Kind = union(enum) {
 pub const ReadFn = *const fn (store: *const settings.Store) Value;
 pub const WriteFn = *const fn (store: *settings.Store, alloc: std.mem.Allocator, value: Value) anyerror!void;
 
+/// Which `settings.Store` a setting's `read`/`write` operate on.
+/// `.ui` is for Vigil-only preferences that must never reach
+/// `ghostty_config_load_file` -- see `settings.zig`'s `ui_store` doc comment.
+pub const StoreTarget = enum { ghostty, ui };
+
 pub const Setting = struct {
     section: Section,
     label: [:0]const u8,
@@ -56,6 +61,7 @@ pub const Setting = struct {
     kind: Kind,
     read: ?ReadFn = null,
     write: ?WriteFn = null,
+    target: StoreTarget = .ghostty,
 };
 
 // -- per-key read/write builders --------------------------------------------
@@ -114,6 +120,11 @@ const CursorStyle = ChoiceKey("cursor-style", &.{ "block", "bar", "underline" },
 const ShellIntegration = ChoiceKey("shell-integration", &.{ "detect", "none" }, 0, false);
 const MouseHide = BoolKey("mouse-hide-while-typing", false, true);
 const Blur = BoolKey("background-blur", false, false);
+/// Vigil-only, not a real libghostty key -- lives in `settings.ui_store`
+/// (see its doc comment), never in the file libghostty parses. Read once
+/// at window creation (`Window.create`); changing it takes effect on the
+/// next launch.
+const VerticalTabs = BoolKey("vigil-vertical-tabs", false, false);
 const Opacity = NumberKey("background-opacity", f64, 1.0, 2);
 const FontSize = NumberKey("font-size", f32, 13, 1);
 
@@ -212,6 +223,15 @@ pub const all = [_]Setting{
         .kind = .toggle,
         .read = Blur.read,
         .write = Blur.write,
+    },
+    .{
+        .section = .appearance,
+        .label = "Vertical tabs",
+        .hint = "Move tabs into a sidebar. Takes effect the next time Vigil starts.",
+        .kind = .toggle,
+        .read = VerticalTabs.read,
+        .write = VerticalTabs.write,
+        .target = .ui,
     },
 
     .{

@@ -1,6 +1,6 @@
 //! Vigil entry point: brings up a plain AppKit app (no Swift, no Xcode
-//! project) with one window styled after Vigil.dc.html's Screen 01, hosting
-//! one real libghostty terminal surface.
+//! project) with a window styled after Vigil.dc.html's Screen 01, hosting
+//! real libghostty terminal surfaces. File > New Window (⌘N) can open more.
 const std = @import("std");
 const objc = @import("objc");
 const ghc = @import("ghostty/c.zig").c;
@@ -36,6 +36,7 @@ pub fn main() !void {
     const NSApp = appkit.class("NSApplication").msgSend(objc.Object, "sharedApplication", .{});
     NSApp.msgSend(void, "setActivationPolicy:", .{@as(i64, 0)}); // NSApplicationActivationPolicyRegular
 
+    Window.installGlobalHandlers();
     const window = try Window.create(allocator, app.app);
     menu.install();
     window.show();

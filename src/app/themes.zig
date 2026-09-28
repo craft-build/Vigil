@@ -17,7 +17,21 @@ pub const Theme = struct {
 
 pub const themes = [_]Theme{
     .{
-        .name = "Vigil Midnight",
+        .name = "Vigil Night",
+        .bg = 0x0f1318,
+        .fg = 0xc5cbd5,
+        .cursor = 0xf7802a,
+        // vg-iris-500 (#5b55e0) at 35% over the vg-ink-900 background,
+        // pre-blended: this config format has no alpha channel.
+        .selection = 0x2a2a5e,
+        .ansi = .{
+            0x1c2330, 0xf2555a, 0x5bd08c, 0xf2c14e, 0x5b8def, 0xc050e0, 0x4fc3d9, 0xc5cbd5,
+            0x465163, 0xff7a7e, 0x86e3ac, 0xffd57a, 0x86aaf5, 0xd586f0, 0x7fd8e8, 0xf4f6f8,
+        },
+    },
+    .{
+        // The old Craft chrome's palette, kept as a terminal theme choice.
+        .name = "Craft",
         .bg = 0x060911,
         .fg = 0xe6e9f2,
         .cursor = 0x4f8dff,
@@ -125,14 +139,14 @@ test "writing a theme emits all its keys and is detectable" {
     defer s.deinit(alloc);
     try s.add(alloc, "font-size", "14"); // unrelated setting must survive
 
-    try write(&s, alloc, themes[1]);
+    try write(&s, alloc, themes[2]); // Tokyo Night
     try std.testing.expectEqual(@as(usize, 1 + 5 + 16), s.entries.items.len);
     try std.testing.expectEqualStrings("#1a1b26", s.get("background").?);
-    try std.testing.expectEqual(@as(?usize, 1), currentIndex(&s));
+    try std.testing.expectEqual(@as(?usize, 2), currentIndex(&s));
 
-    try write(&s, alloc, themes[3]); // replaces, doesn't accumulate
+    try write(&s, alloc, themes[4]); // Dracula; replaces, doesn't accumulate
     try std.testing.expectEqual(@as(usize, 1 + 5 + 16), s.entries.items.len);
-    try std.testing.expectEqual(@as(?usize, 3), currentIndex(&s));
+    try std.testing.expectEqual(@as(?usize, 4), currentIndex(&s));
     try std.testing.expectEqualStrings("14", s.get("font-size").?);
 }
 
@@ -140,10 +154,10 @@ test "palette entries use ghostty's N=#rrggbb form" {
     const alloc = std.testing.allocator;
     var s: settings.Store = .{};
     defer s.deinit(alloc);
-    try write(&s, alloc, themes[0]);
+    try write(&s, alloc, themes[0]); // Vigil Night
     var found = false;
     for (s.entries.items) |e| {
-        if (std.mem.eql(u8, e.key, "palette") and std.mem.eql(u8, e.value, "1=#f0455f")) found = true;
+        if (std.mem.eql(u8, e.key, "palette") and std.mem.eql(u8, e.value, "1=#f2555a")) found = true;
     }
     try std.testing.expect(found);
 }

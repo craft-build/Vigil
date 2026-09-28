@@ -1,4 +1,4 @@
-//! The main window's model: an ordered list of tabs, each holding a tree of
+//! A window's model: an ordered list of tabs, each holding a tree of
 //! terminal surfaces (splits) laid out and drawn by this file. libghostty
 //! drives tab and split operations through `action_cb`; those land in
 //! `handleAction`, which mutates this model and re-lays-out/re-renders.
@@ -16,8 +16,17 @@
 //! custom class whose `setFrameSize:` triggers `relayoutAll`, and every
 //! split/close/equalize/zoom operation calls it directly.
 //!
-//! Only one Window exists (`Window.instance`), since libghostty's callbacks
-//! carry no per-window context beyond a surface pointer.
+//! More than one `Window` can exist at once (File > New Window / ⌘N).
+//! libghostty's own callbacks (`action_cb`, `close_surface_cb`) carry no
+//! per-window context, only a surface pointer, so every view that can
+//! originate a click/drag/key event and needs to know "which window" --
+//! tab items, split dividers, the content view itself -- carries a
+//! `vigilOwner` ivar (an opaque pointer to its `*Window`, stashed when
+//! built) instead of reaching for a single global instance. That's also
+//! why the UI callbacks this file hands to `chrome.zig`/`sidebar.zig`
+//! (`on_tab_click` and friends) are wired exactly once, in
+//! `installGlobalHandlers`, rather than per-window: their signatures all
+//! take the owner back as a parameter, so one wiring covers every window.
 const std = @import("std");
 const objc = @import("objc");
 const ghc = @import("../ghostty/c.zig").c;
@@ -25,6 +34,8 @@ const appkit = @import("appkit.zig");
 const TerminalSurface = @import("TerminalSurface.zig").TerminalSurface;
 const pane = @import("pane.zig");
 const chrome = @import("../ui/chrome.zig");
+const sidebar = @import("../ui/sidebar.zig");
+const rename_field = @import("../ui/rename_field.zig");
 const theme = @import("../ui/theme.zig");
 const shortcuts_sheet = @import("../ui/shortcuts_sheet.zig");
 const palette = @import("../ui/palette.zig");
@@ -84,16 +95,31 @@ const Tab = struct {
 
 const VisibilityCtx = struct { tab: *Tab, visible: bool };
 
+/// The two mutually-exclusive tab-bar chrome layouts, chosen once (see
+/// `Window.create`) by the "Vertical tabs" preference and never
+/// hot-swapped -- switching it takes effect on the next launch.
+const ChromeUI = union(enum) {
+    horizontal: chrome.TabBar,
+    vertical: sidebar.Sidebar,
+};
+
 pub const Window = struct {
     allocator: std.mem.Allocator,
     app: ghc.ghostty_app_t,
     window: objc.Object,
     content: objc.Object,
-    tab_bar: chrome.TabBar,
+    chrome_ui: ChromeUI,
     tabs: std.ArrayList(Tab) = .empty,
     active: usize = 0,
 
-    pub var instance: ?*Window = null;
+    /// Every open window, in creation order. `keyWindow`/`forNSWindow`
+    /// resolve "which window is this event/click for" against this list;
+    /// `windowWillClose` removes a window when it closes.
+    pub var all: std.ArrayList(*Window) = .empty;
+    /// The one `ghostty_app_t`, shared by every window (set on the first
+    /// `create`). App-wide operations (`settings.apply`, theme changes)
+    /// key off this instead of any particular window's `.app`.
+    pub var shared_app: ghc.ghostty_app_t = null;
 
     const window_w: f64 = 1120;
     const window_h: f64 = 700;
@@ -118,6 +144,26 @@ pub const Window = struct {
         window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
         window.msgSend(void, "setBackgroundColor:", .{appkit.nsColor(theme.colors.bg_app)});
         window.msgSend(void, "center", .{});
+        // `center` alone puts every window at the exact same point, so a
+        // second (or third, ...) window would land perfectly on top of an
+        // existing one -- nudge each successive window down and to the
+        // right a bit, wrapping after a few so it doesn't walk off-screen.
+        if (all.items.len > 0) {
+            var frame = window.msgSend(appkit.NSRect, "frame", .{});
+            const step: f64 = @floatFromInt(28 * (all.items.len % 8));
+            frame.origin.x += step;
+            frame.origin.y -= step;
+            window.msgSend(void, "setFrameOrigin:", .{frame.origin});
+        }
+
+        // Runs the real teardown when this window closes (native red
+        // button, or `close`/`performClose:` called programmatically --
+        // see `windowWillClose`). Leaked deliberately, like the other
+        // small per-window AppKit objects this file never releases: one
+        // delegate for the process lifetime of its window is negligible.
+        const delegate = delegateClass().msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
+        delegate.setInstanceVariable("vigilOwner", .{ .value = @ptrCast(self) });
+        window.msgSend(void, "setDelegate:", .{delegate});
 
         // A plain NSView can't express "tell Zig when I resize"; a custom
         // subclass can. Panes are laid out manually (ratio splits aren't
@@ -125,35 +171,137 @@ pub const Window = struct {
         // to re-run that layout -- see `contentSetFrameSize`.
         const content = contentViewClass().msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "initWithFrame:", .{appkit.rect(0, 0, window_w, window_h)});
+        // `setContentView:` below synchronously triggers our `setFrameSize:`
+        // override, before `self`'s fields are populated -- leave the
+        // `vigilOwner` ivar at its zero-initialized nil (Objective-C zeroes
+        // every ivar on `alloc`) until after `self.* = .{...}` so
+        // `contentSetFrameSize` safely no-ops during construction instead
+        // of calling `relayoutAll` against not-yet-initialized fields.
         window.msgSend(void, "setContentView:", .{content});
-        const tab_bar = chrome.buildTabBar(content, window_w, window_h);
+
+        // Vigil-only preference (not a libghostty key, so it lives in
+        // `settings.ui_store`); read once here -- changing it takes effect
+        // on the next launch, not live.
+        const vertical_tabs = if (settings.ui_store.get("vigil-vertical-tabs")) |v| std.mem.eql(u8, v, "true") else false;
+        const chrome_ui: ChromeUI = if (vertical_tabs)
+            .{ .vertical = sidebar.build(content, window_w, window_h, @ptrCast(self)) }
+        else
+            .{ .horizontal = chrome.buildTabBar(content, window_w, window_h) };
 
         self.* = .{
             .allocator = allocator,
             .app = app,
             .window = window,
             .content = content,
-            .tab_bar = tab_bar,
+            .chrome_ui = chrome_ui,
         };
-        instance = self;
-        chrome.on_tab_click = onTabClick;
-        chrome.on_tab_double_click = onTabDoubleClick;
-        chrome.on_rename_commit = onRenameCommit;
-        chrome.on_settings_click = preferences_window.show;
-        TerminalSurface.on_click = onSurfaceClicked;
-        keymonitor.install(onKeyEvent);
-        palette.on_run = runCommand;
-        theme_gallery.on_select = applyTheme;
-        preferences_window.on_change = onPreferencesChanged;
-        preferences_window.on_button = onPreferencesButton;
+        content.setInstanceVariable("vigilOwner", .{ .value = @ptrCast(self) });
+        shared_app = app;
+        try all.append(std.heap.c_allocator, self);
 
         try self.newTab(null);
         return self;
     }
 
+    /// Wires every callback `chrome.zig`/`sidebar.zig`/`TerminalSurface`/
+    /// `palette.zig`/`theme_gallery.zig`/`preferences_window.zig` expose,
+    /// exactly once for the process's lifetime -- call before the first
+    /// `create`. Safe to call regardless of how many windows end up
+    /// existing, since every handler below resolves its own window from
+    /// an owner ivar or `keyWindow()` rather than closing over one.
+    pub fn installGlobalHandlers() void {
+        keymonitor.install(onKeyEvent);
+        chrome.on_settings_click = preferences_window.show;
+        chrome.on_tab_click = dispatchTabClick;
+        chrome.on_tab_double_click = dispatchTabDoubleClick;
+        chrome.on_rename_commit = dispatchRenameCommit;
+        chrome.on_tab_close = dispatchTabClose;
+        sidebar.on_tab_click = dispatchTabClick;
+        sidebar.on_tab_double_click = dispatchTabDoubleClick;
+        sidebar.on_rename_commit = dispatchRenameCommit;
+        sidebar.on_tab_close = dispatchTabClose;
+        sidebar.on_split_right_click = dispatchSidebarSplitRight;
+        TerminalSurface.on_click = dispatchSurfaceClick;
+        palette.on_run = runCommand;
+        theme_gallery.on_select = applyTheme;
+        preferences_window.on_change = onPreferencesChanged;
+        preferences_window.on_button = onPreferencesButton;
+    }
+
+    /// The window `NSApp.keyWindow` currently belongs to, or `null` if
+    /// none of ours is key (e.g. only Preferences is focused, or no
+    /// window is open at all). App-level actions (the command palette's
+    /// commands, Preferences' "Choose theme…") act on this window.
+    pub fn keyWindow() ?*Window {
+        const key = appkit.class("NSApplication").msgSend(objc.Object, "sharedApplication", .{})
+            .msgSend(objc.Object, "keyWindow", .{});
+        if (key.value == null) return null;
+        for (all.items) |w| {
+            if (w.window.value == key.value) return w;
+        }
+        return null;
+    }
+
+    /// The `*Window` that owns NSWindow `win`, if any (`win` may belong to
+    /// some other panel entirely, e.g. Preferences).
+    pub fn forNSWindow(win: objc.Object) ?*Window {
+        for (all.items) |w| {
+            if (w.window.value == win.value) return w;
+        }
+        return null;
+    }
+
     pub fn show(self: *Window) void {
         self.window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
         if (settings.current) |cfg| self.syncAppearance(cfg);
+    }
+
+    // -- window close ---------------------------------------------------------
+
+    var delegate_class: ?objc.Class = null;
+
+    fn delegateClass() objc.Class {
+        if (delegate_class) |cls| return cls;
+        const cls = objc.allocateClassPair(appkit.class("NSObject"), "VigilWindowDelegate") orelse
+            @panic("failed to register VigilWindowDelegate");
+        _ = cls.addIvar("vigilOwner");
+        std.debug.assert(cls.addMethod("windowWillClose:", windowWillClose));
+        objc.registerClassPair(cls);
+        delegate_class = cls;
+        return cls;
+    }
+
+    /// The one real teardown path for a window: reached from the native
+    /// red button and from `close`/`performClose:` called programmatically
+    /// (`closeWholeTab`'s "last tab" branch, `GHOSTTY_ACTION_CLOSE_WINDOW`)
+    /// -- both just ask AppKit to close the window and let this run,
+    /// rather than tearing down twice. Frees every remaining tab's
+    /// surfaces (deferred, like `closeWholeTab` does, since libghostty may
+    /// still be unwinding a call that originated from one of them), drops
+    /// `self` from `all`, and frees `self`. Does *not* terminate the app,
+    /// even if this was the last window -- that's `GHOSTTY_ACTION_QUIT`
+    /// alone now, matching normal macOS app behavior.
+    fn windowWillClose(id: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+        const owner = (objc.Object{ .value = id }).getInstanceVariable("vigilOwner").value orelse return;
+        const self: *Window = @ptrCast(@alignCast(owner));
+
+        for (all.items, 0..) |w, i| {
+            if (w == self) {
+                _ = all.orderedRemove(i);
+                break;
+            }
+        }
+
+        while (self.tabs.items.len > 0) {
+            var tab = self.tabs.orderedRemove(self.tabs.items.len - 1);
+            self.allocator.free(tab.title);
+            for (tab.dividers.items) |d| d.view.msgSend(void, "removeFromSuperview", .{});
+            tab.dividers.deinit(self.allocator);
+            tab.tree.walk(self, detachLeaf);
+            tab.tree.deinit();
+        }
+        self.tabs.deinit(self.allocator);
+        self.allocator.destroy(self);
     }
 
     // -- content view / layout ---------------------------------------------
@@ -164,6 +312,7 @@ pub const Window = struct {
         if (content_view_class) |cls| return cls;
         const cls = objc.allocateClassPair(appkit.class("NSView"), "VigilContentView") orelse
             @panic("failed to register VigilContentView");
+        _ = cls.addIvar("vigilOwner");
         std.debug.assert(cls.addMethod("setFrameSize:", contentSetFrameSize));
         objc.registerClassPair(cls);
         content_view_class = cls;
@@ -173,7 +322,9 @@ pub const Window = struct {
     fn contentSetFrameSize(id: objc.c.id, sel: objc.c.SEL, size: appkit.NSSize) callconv(.c) void {
         const obj = objc.Object{ .value = id };
         obj.msgSendSuper(appkit.class("NSView"), void, objc.Sel{ .value = sel }, .{size});
-        if (instance) |self| self.relayoutAll();
+        const owner = obj.getInstanceVariable("vigilOwner").value orelse return;
+        const self: *Window = @ptrCast(@alignCast(owner));
+        self.relayoutAll();
     }
 
     /// Re-lays-out every tab's pane tree against the current content size.
@@ -183,7 +334,10 @@ pub const Window = struct {
     /// sized immediately instead of on its next own resize.
     pub fn relayoutAll(self: *Window) void {
         const bounds = self.content.msgSend(appkit.NSRect, "bounds", .{});
-        const area = appkit.rect(0, 0, bounds.size.width, bounds.size.height - chrome.tab_bar_height);
+        const area = if (self.chrome_ui == .vertical)
+            sidebar.layout(&self.chrome_ui.vertical, bounds)
+        else
+            appkit.rect(0, 0, bounds.size.width, bounds.size.height - chrome.tab_bar_height);
         for (self.tabs.items) |*tab| self.layoutTab(tab, area);
     }
 
@@ -237,6 +391,7 @@ pub const Window = struct {
         const cls = objc.allocateClassPair(appkit.class("NSView"), "VigilSplitDivider") orelse
             @panic("failed to register VigilSplitDivider");
         _ = cls.addIvar("vigilSplit");
+        _ = cls.addIvar("vigilOwner");
         std.debug.assert(cls.addMethod("mouseDragged:", dividerMouseDragged));
         objc.registerClassPair(cls);
         divider_class = cls;
@@ -249,7 +404,9 @@ pub const Window = struct {
     }
 
     fn dividerMouseDragged(id: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
-        const self = instance orelse return;
+        const obj = objc.Object{ .value = id };
+        const owner = obj.getInstanceVariable("vigilOwner").value orelse return;
+        const self: *Window = @ptrCast(@alignCast(owner));
         const s = splitOf(id);
         const window_pt = (objc.Object{ .value = event }).msgSend(appkit.NSPoint, "locationInWindow", .{});
         const pt = self.content.msgSend(appkit.NSPoint, "convertPoint:fromView:", .{ window_pt, @as(?*anyopaque, null) });
@@ -261,6 +418,7 @@ pub const Window = struct {
         const view = dividerClass().msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "initWithFrame:", .{appkit.rect(0, 0, 0, 0)});
         view.setInstanceVariable("vigilSplit", .{ .value = @ptrCast(s) });
+        view.setInstanceVariable("vigilOwner", .{ .value = @ptrCast(self) });
         appkit.styleLayer(appkit.layerBacked(view), .{ .background = theme.colors.border_default });
         self.content.msgSend(void, "addSubview:positioned:relativeTo:", .{
             view,
@@ -298,7 +456,7 @@ pub const Window = struct {
     pub fn newTab(self: *Window, inherit: ?ghc.ghostty_surface_t) !void {
         const bounds = self.content.msgSend(appkit.NSRect, "bounds", .{});
         const frame = appkit.rect(0, 0, bounds.size.width, bounds.size.height - chrome.tab_bar_height);
-        const surface = try TerminalSurface.create(self.allocator, self.app, frame, inherit);
+        const surface = try TerminalSurface.create(self.allocator, self.app, frame, inherit, @ptrCast(self));
         errdefer surface.destroy(self.allocator);
         surface.view.msgSend(void, "setAutoresizingMask:", .{@as(u64, 0)}); // laid out manually
         // Below the tab bar so chrome stays on top.
@@ -320,7 +478,7 @@ pub const Window = struct {
     }
 
     /// Removes the pane owning `surface`. If it was its tab's only pane,
-    /// the whole tab closes (quitting the app if it was the last tab).
+    /// the whole tab closes (closing the window if it was the last tab).
     pub fn closePane(self: *Window, surface: *TerminalSurface) void {
         const tab_index = self.tabIndexFor(surface) orelse return;
         const tab = &self.tabs.items[tab_index];
@@ -356,7 +514,10 @@ pub const Window = struct {
         tab.tree.deinit();
 
         if (self.tabs.items.len == 0) {
-            terminate();
+            // Closes *this* window only -- `windowWillClose` does the real
+            // teardown; the app itself keeps running (other windows, or
+            // none at all) until an explicit Quit.
+            self.window.msgSend(void, "close", .{});
             return;
         }
 
@@ -404,7 +565,12 @@ pub const Window = struct {
         var stack: [64][:0]const u8 = undefined;
         const n = @min(self.tabs.items.len, stack.len);
         for (self.tabs.items[0..n], 0..) |tab, i| stack[i] = tab.title;
-        chrome.populateTabs(self.tab_bar, stack[0..n], self.active);
+        const owner: ?*anyopaque = @ptrCast(self);
+        if (self.chrome_ui == .vertical) {
+            sidebar.populate(&self.chrome_ui.vertical, stack[0..n], self.active, owner);
+        } else {
+            chrome.populateTabs(&self.chrome_ui.horizontal, stack[0..n], self.active, owner);
+        }
     }
 
     fn tabIndexFor(self: *Window, surface: *TerminalSurface) ?usize {
@@ -443,19 +609,58 @@ pub const Window = struct {
         self.refreshTabBar();
     }
 
-    fn onTabDoubleClick(index: usize) void {
-        const self = instance orelse return;
-        if (index >= self.tabs.items.len) return;
-        chrome.beginRename(index, self.tabs.items[index].title);
+    // -- owner-ivar trampolines -------------------------------------------
+    // Wired once in `installGlobalHandlers`; each resolves the owning
+    // `*Window` from the ivar the click/event originated on and forwards
+    // to the real (per-instance) method below.
+
+    fn dispatchTabClick(owner: ?*anyopaque, index: usize) void {
+        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        self.onTabClick(index);
     }
 
-    fn onRenameCommit(index: usize, text: []const u8) void {
-        const self = instance orelse return;
+    fn dispatchTabDoubleClick(owner: ?*anyopaque, index: usize) void {
+        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        self.onTabDoubleClick(index);
+    }
+
+    fn dispatchTabClose(owner: ?*anyopaque, index: usize) void {
+        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        self.onTabCloseClick(index);
+    }
+
+    fn dispatchRenameCommit(owner: ?*anyopaque, index: usize, text: []const u8) void {
+        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        self.onRenameCommit(index, text);
+    }
+
+    fn dispatchSidebarSplitRight(owner: ?*anyopaque) void {
+        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        self.onSidebarSplitRight();
+    }
+
+    /// `TerminalSurface.on_click`'s single global handler: the surface
+    /// itself already carries `.owner`, so no ivar lookup is needed here.
+    fn dispatchSurfaceClick(ts: *TerminalSurface) void {
+        const self: *Window = @ptrCast(@alignCast(ts.owner orelse return));
+        self.onSurfaceClicked(ts);
+    }
+
+    fn onTabDoubleClick(self: *Window, index: usize) void {
+        if (index >= self.tabs.items.len) return;
+        const owner: ?*anyopaque = @ptrCast(self);
+        if (self.chrome_ui == .vertical) {
+            sidebar.beginRename(&self.chrome_ui.vertical, index, self.tabs.items[index].title, owner);
+        } else {
+            chrome.beginRename(self.chrome_ui.horizontal, index, self.tabs.items[index].title, owner);
+        }
+    }
+
+    fn onRenameCommit(self: *Window, index: usize, text: []const u8) void {
         self.renameTab(index, text);
     }
 
-    fn onTabClick(index: usize) void {
-        const self = instance orelse return;
+    fn onTabClick(self: *Window, index: usize) void {
         if (index == chrome.plus_index) {
             self.newTab(self.tabs.items[self.active].focused.surface) catch {};
         } else if (index < self.tabs.items.len) {
@@ -466,8 +671,7 @@ pub const Window = struct {
     /// Moves keyboard focus to whichever pane the user actually clicked --
     /// only ever fires for the active tab, since hidden panes' views don't
     /// receive mouse events.
-    fn onSurfaceClicked(ts: *TerminalSurface) void {
-        const self = instance orelse return;
+    fn onSurfaceClicked(self: *Window, ts: *TerminalSurface) void {
         const tab = &self.tabs.items[self.active];
         if (!tab.tree.contains(ts, surfaceEq)) return; // e.g. a click during teardown
         self.focusPane(tab, ts);
@@ -482,24 +686,24 @@ pub const Window = struct {
 
     /// ⌘/ toggles the shortcuts sheet; while it's open, Esc closes it and
     /// plain typing is swallowed so keystrokes don't reach the terminal
-    /// hidden behind it. Returns true to consume the event.
+    /// hidden behind it. Returns true to consume the event. Installed once
+    /// (see `installGlobalHandlers`); resolves which window an event
+    /// belongs to from the event's own NSWindow, since the key monitor
+    /// sees every window's keys.
     fn onKeyEvent(event: objc.Object) bool {
-        const self = instance orelse return false;
-        // The monitor sees every window's keys; only the main window's are ours,
-        // except ⌘W/Esc in Preferences.
         const event_window = event.msgSend(objc.Object, "window", .{});
-        if (event_window.value != self.window.value) {
+        const self = forNSWindow(event_window) orelse {
             return preferences_window.isPreferencesWindow(event_window) and preferences_window.handleKey(event);
-        }
+        };
         const mods = keymonitor.modifiers(event);
         const code = keymonitor.keyCode(event);
 
         // A tab rename in progress takes priority: only Esc is ours to
         // handle (cancels it); every other key must reach the field editor
         // normally (typing, Return-to-commit, ...).
-        if (chrome.isRenaming()) {
+        if (rename_field.isActive()) {
             if (mods == .none and code == keymonitor.key_escape) {
-                chrome.cancelRename();
+                rename_field.cancel();
                 return true;
             }
             return false;
@@ -523,37 +727,62 @@ pub const Window = struct {
     }
 
     /// Runs a palette-chosen command: Vigil's own, or a libghostty binding
-    /// action fired at the active tab's focused pane.
+    /// action fired at the active tab's focused pane. `new_window` is the
+    /// one Vigil action that doesn't need an existing window at all, so
+    /// it's special-cased before resolving one.
     fn runCommand(cmd: keybindings.Command) void {
-        const self = instance orelse return;
-        if (cmd.vigil) |action| switch (action) {
-            .show_shortcuts => shortcuts_sheet.show(self.content),
-            .show_themes => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
-            .show_preferences => preferences_window.show(),
+        if (cmd.vigil) |action| {
+            if (action == .new_window) {
+                const w = create(std.heap.c_allocator, shared_app) catch return;
+                w.show();
+                return;
+            }
+            const self = keyWindow() orelse return;
+            switch (action) {
+                .show_shortcuts => shortcuts_sheet.show(self.content),
+                .show_themes => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
+                .show_preferences => preferences_window.show(),
+                .new_window => unreachable, // handled above
+            }
         } else {
+            const self = keyWindow() orelse return;
             _ = keybindings.perform(self.tabs.items[self.active].focused.surface, cmd);
         }
     }
 
     /// Writes the theme into Vigil's config, saves it, and pushes the new
-    /// config to every surface.
+    /// config to every surface (in every window -- one shared
+    /// `ghostty_app_t`, so no window reference is needed).
     fn applyTheme(index: usize) void {
-        const self = instance orelse return;
         if (index >= themes.themes.len) return;
         themes.write(&settings.store, std.heap.c_allocator, themes.themes[index]) catch return;
         settings.save();
-        settings.apply(self.app);
+        settings.apply(shared_app);
         theme_gallery.setApplied(index);
     }
 
     fn onPreferencesChanged() void {
-        const self = instance orelse return;
-        settings.apply(self.app);
+        settings.apply(shared_app);
     }
 
-    /// Preferences buttons open screens that live in the main window.
+    /// The vertical sidebar's content-header split-right button -- the same
+    /// operation ⌘D performs, just reachable without a keyboard.
+    fn onSidebarSplitRight(self: *Window) void {
+        if (self.tabs.items.len == 0) return;
+        self.newSplit(self.tabs.items[self.active].focused, ghc.GHOSTTY_SPLIT_DIRECTION_RIGHT) catch {};
+    }
+
+    /// A tab's close button (chrome.zig's per-tab "x", or the sidebar's
+    /// per-row bin icon) -- closes every pane in that tab, same as
+    /// libghostty's `close_tab` binding action.
+    fn onTabCloseClick(self: *Window, index: usize) void {
+        if (index >= self.tabs.items.len) return;
+        self.closeWholeTab(index);
+    }
+
+    /// Preferences buttons open screens that live in the key window.
     fn onPreferencesButton(action: prefs.ButtonAction) void {
-        const self = instance orelse return;
+        const self = keyWindow() orelse return;
         self.window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
         switch (action) {
             .choose_theme => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
@@ -688,8 +917,14 @@ pub const Window = struct {
                 self.window.msgSend(void, "toggleFullScreen:", .{@as(?*anyopaque, null)});
                 return true;
             },
-            ghc.GHOSTTY_ACTION_QUIT, ghc.GHOSTTY_ACTION_CLOSE_WINDOW => {
+            // Only Quit terminates the app now; closing a window (even the
+            // last one) just closes it -- see `windowWillClose`.
+            ghc.GHOSTTY_ACTION_QUIT => {
                 terminate();
+                return true;
+            },
+            ghc.GHOSTTY_ACTION_CLOSE_WINDOW => {
+                self.window.msgSend(void, "close", .{});
                 return true;
             },
             else => return false,
@@ -742,7 +977,7 @@ pub const Window = struct {
         const halves = pane.splitRect(target.last_frame, placement.direction, 0.5);
         const initial_frame = if (placement.new_is_first) halves.first else halves.second;
 
-        const new_ts = try TerminalSurface.create(self.allocator, self.app, initial_frame, target.surface);
+        const new_ts = try TerminalSurface.create(self.allocator, self.app, initial_frame, target.surface, @ptrCast(self));
         errdefer new_ts.destroy(self.allocator);
         new_ts.view.msgSend(void, "setAutoresizingMask:", .{@as(u64, 0)});
         self.content.msgSend(void, "addSubview:positioned:relativeTo:", .{

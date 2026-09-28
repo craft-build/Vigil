@@ -64,8 +64,21 @@ pub const App = struct {
         act: c.ghostty_action_s,
     ) callconv(.c) bool {
         _ = app;
-        const window = Window.instance orelse return false;
+        const window = resolveWindow(target) orelse return false;
         return window.handleAction(target, act);
+    }
+
+    /// More than one `Window` can exist now, so an action naming a specific
+    /// surface is routed to that surface's own window; anything else (no
+    /// surface target -- app-wide actions) falls back to whichever window
+    /// is currently key.
+    fn resolveWindow(target: c.ghostty_target_s) ?*Window {
+        if (target.tag == c.GHOSTTY_TARGET_SURFACE) {
+            if (TerminalSurface.fromHandle(target.target.surface)) |ts| {
+                if (ts.owner) |owner| return @ptrCast(@alignCast(owner));
+            }
+        }
+        return Window.keyWindow();
     }
 
     fn readClipboard(
@@ -149,8 +162,8 @@ pub const App = struct {
     /// if it was the tab's only one, the whole tab).
     fn closeSurface(userdata: ?*anyopaque, process_alive: bool) callconv(.c) void {
         _ = process_alive; // TODO(roadmap): confirm before closing a live process.
-        const window = Window.instance orelse return;
         const ts: *TerminalSurface = @ptrCast(@alignCast(userdata orelse return));
+        const window: *Window = @ptrCast(@alignCast(ts.owner orelse return));
         window.closePane(ts);
     }
 
