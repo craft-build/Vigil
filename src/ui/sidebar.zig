@@ -59,6 +59,9 @@ pub const Sidebar = struct {
     /// space -- used by `beginRename` to place the rename field.
     row_frames: [64]appkit.NSRect = undefined,
     row_count: usize = 0,
+    /// Last tab count rendered -- row geometry only moves when this
+    /// changes, so only then does `populate` kill an in-progress rename.
+    last_tab_count: ?usize = null,
 };
 
 /// Builds the sidebar column and the main content column's header strip,
@@ -148,11 +151,11 @@ pub fn build(parent: objc.Object, width: f64, height: f64, owner: ?*anyopaque) S
     return .{ .container = container, .list = list, .header = header, .header_title = title };
 }
 
-/// Repositions the header against `bounds` (the content view's current
-/// bounds) and returns the rect left over for the terminal area. The
-/// sidebar itself is a fixed-width column, so only its height tracks
-/// `bounds` (via its own autoresizing-free rebuild in `Window.relayoutAll`
-/// -- it's not resized here since `sidebar_width` never changes).
+/// Repositions the sidebar column and header against `bounds` (the content
+/// view's current bounds) and returns the rect left over for the terminal
+/// area. The sidebar is a fixed-width column pinned to the leading edge;
+/// only its height follows the window (`list` inside it is height-sizable,
+/// and its rows pin to the top -- see `populate`).
 pub fn layout(self: *Sidebar, bounds: appkit.NSRect) appkit.NSRect {
     self.container.msgSend(void, "setFrame:", .{appkit.rect(0, 0, sidebar_width, bounds.size.height)});
     self.header.msgSend(void, "setFrame:", .{appkit.rect(sidebar_width, bounds.size.height - content_header_height, bounds.size.width - sidebar_width, content_header_height)});
@@ -163,7 +166,12 @@ pub fn layout(self: *Sidebar, bounds: appkit.NSRect) appkit.NSRect {
 /// the content header's title to match. `owner` is stashed on every row/
 /// close button built.
 pub fn populate(self: *Sidebar, titles: []const [:0]const u8, active: usize, owner: ?*anyopaque) void {
-    rename_field.cancel(); // the row layout is about to change under it
+    // Same structural-vs-title-only distinction as chrome.populateTabs:
+    // adding/closing a tab strand the rename field, title refreshes don't.
+    if (self.last_tab_count != titles.len) {
+        rename_field.cancel();
+        self.last_tab_count = titles.len;
+    }
     appkit.removeAllSubviews(self.list);
 
     const bounds = self.list.msgSend(appkit.NSRect, "bounds", .{});
@@ -176,6 +184,7 @@ pub fn populate(self: *Sidebar, titles: []const [:0]const u8, active: usize, own
     const label_x: f64 = icon_x + row_icon_slot + 8;
 
     var y = bounds.size.height - row_h;
+    var placed: usize = 0;
     for (titles, 0..) |title, i| {
         if (y + row_h < 0) break; // no scrolling yet -- stop once we'd draw off the bottom
         const is_active = i == active;
@@ -190,6 +199,10 @@ pub fn populate(self: *Sidebar, titles: []const [:0]const u8, active: usize, own
             .border = if (is_active) theme.colors.border_subtle else null,
             .corner_radius = theme.radius.md,
         }, is_active, owner);
+        // Flexible bottom margin: rows are laid out from the top of `list`
+        // and must stay pinned there (next to the "New tab" button) when
+        // the window's height changes, not drift down with the old origin.
+        setAutoresizing(row, NSViewMaxYMargin);
 
         const icon_slot = appkit.newView(appkit.rect(icon_x, (row_h - row_icon_slot) / 2, row_icon_slot, row_icon_slot));
         appkit.addSubview(icon_slot, chrome.iconGlyph(row_icon_slot, "terminal", title, "\u{276F}"));
@@ -204,6 +217,7 @@ pub fn populate(self: *Sidebar, titles: []const [:0]const u8, active: usize, own
         );
         label.msgSend(void, "setLineBreakMode:", .{@as(u64, 4)}); // NSLineBreakByTruncatingTail
         appkit.addSubview(row, label);
+        placed += 1;
 
         if (i < 9) {
             var buf: [4:0]u8 = undefined;
@@ -235,12 +249,13 @@ pub fn populate(self: *Sidebar, titles: []const [:0]const u8, active: usize, own
             "Close tab",
             "\u{d7}",
         );
+        setAutoresizing(close, NSViewMaxYMargin); // tracks its row
         appkit.addSubview(self.list, close);
 
         if (i < self.row_frames.len) self.row_frames[i] = frame;
         y -= row_step;
     }
-    self.row_count = @min(titles.len, self.row_frames.len);
+    self.row_count = @min(placed, self.row_frames.len);
 
     var buf: [64:0]u8 = undefined;
     const title_text = if (active < titles.len) titles[active] else "";

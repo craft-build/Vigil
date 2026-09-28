@@ -22,9 +22,16 @@ zig build \
 # Apple's own linker doesn't have this bug, so pre-link the static archive
 # into a dylib with it; Vigil's build.zig links against that dylib instead
 # of the raw .a.
-SLICE_DIR="$(dirname "${BASH_SOURCE[0]}")/../vendor/ghostty/macos/GhosttyKit.xcframework/macos-arm64"
+# Discover the slice like build.zig's findXcframeworkSlice does -- the
+# directory name varies ("macos-arm64", "macos-arm64_x86_64", ...) with the
+# xcframework target, so don't hardcode an arch string.
+SLICE_DIR="$(find "$(dirname "${BASH_SOURCE[0]}")/../vendor/ghostty/macos/GhosttyKit.xcframework" \
+  -maxdepth 1 -type d -name 'macos-*' | head -n1)"
+[[ -n "$SLICE_DIR" ]] || { echo "no macos-* slice found"; exit 1; }
+# Write to a temp file and rename so an interrupted clang++ can't leave a
+# half-written dylib behind.
 clang++ -shared \
-  -o "$SLICE_DIR/libghostty.dylib" \
+  -o "$SLICE_DIR/libghostty.dylib.tmp" \
   -Wl,-force_load,"$SLICE_DIR/libghostty-internal.a" \
   -framework AppKit -framework Foundation -framework Metal -framework MetalKit \
   -framework QuartzCore -framework CoreText -framework CoreGraphics \
@@ -32,6 +39,7 @@ clang++ -shared \
   -framework GameController \
   -lobjc -lc++ \
   -install_name "@rpath/libghostty.dylib"
+mv "$SLICE_DIR/libghostty.dylib.tmp" "$SLICE_DIR/libghostty.dylib"
 
 echo "libghostty.dylib relinked at $SLICE_DIR/libghostty.dylib"
 

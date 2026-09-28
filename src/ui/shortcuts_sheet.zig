@@ -22,6 +22,9 @@ const title_h: f64 = 56;
 const centered_mask: u64 = 1 | 4 | 8 | 32;
 
 var overlay: ?objc.Object = null;
+/// The content view the sheet is hosted in -- needed so a closing window
+/// can hide it (and only if it's its own sheet), like the other overlays.
+var host: ?objc.Object = null;
 
 pub fn isVisible() bool {
     return overlay != null;
@@ -35,10 +38,19 @@ pub fn hide() void {
     const view = overlay orelse return;
     view.msgSend(void, "removeFromSuperview", .{});
     overlay = null;
+    host = null;
+}
+
+/// Hides only if the sheet is hosted by `parent` -- see palette.zig's
+/// `hideIfHostedBy`.
+pub fn hideIfHostedBy(parent: objc.Object) void {
+    const h = host orelse return;
+    if (h.value == parent.value) hide();
 }
 
 pub fn show(parent: objc.Object) void {
     if (isVisible()) return;
+    host = parent;
 
     const bounds = parent.msgSend(appkit.NSRect, "bounds", .{});
     const backdrop = overlay_ui.backdrop(bounds, hide);

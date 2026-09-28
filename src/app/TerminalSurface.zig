@@ -67,6 +67,9 @@ pub const TerminalSurface = struct {
         const cls = viewClass();
         const view = cls.msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "initWithFrame:", .{frame});
+        // Never added to any superview on the failure path, so this plain
+        // release deallocs it; on success `destroy` holds the pairing.
+        errdefer view.msgSend(void, "release", .{});
 
         // Stash a raw pointer back to `self` on the Objective-C object so
         // our method overrides (keyDown:, setFrameSize:, ...) can recover
@@ -109,8 +112,14 @@ pub const TerminalSurface = struct {
         ghc.ghostty_surface_set_focus(self.surface, visible);
     }
 
+    /// The view is always removed from its superview (by `detachLeaf` or
+    /// `closePane`) before `destroy` runs -- `destroy` is only ever invoked
+    /// via the deferred `freeSurface` dispatch or an error path after a
+    /// positioned-add -- so releasing the alloc-time +1 here is the final
+    /// release and deallocs it.
     pub fn destroy(self: *TerminalSurface, allocator: std.mem.Allocator) void {
         ghc.ghostty_surface_free(self.surface);
+        self.view.msgSend(void, "release", .{});
         allocator.destroy(self);
     }
 

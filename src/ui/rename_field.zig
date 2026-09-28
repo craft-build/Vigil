@@ -103,6 +103,6 @@ fn renameCommit(_: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) voi
     const tag = f.msgSend(i64, "tag", .{});
     if (tag < 0) return;
     const str = f.msgSend(objc.Object, "stringValue", .{});
-    const text = std.mem.span(str.msgSend([*:0]const u8, "UTF8String", .{}));
-    if (commit_cb) |cb| cb(@intCast(tag), text);
+    const cstr = str.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return;
+    if (commit_cb) |cb| cb(@intCast(tag), std.mem.span(cstr));
 }

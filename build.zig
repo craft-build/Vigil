@@ -54,6 +54,11 @@ pub fn build(b: *std.Build) void {
     exe_mod.addLibraryPath(b.path(slice_dir));
     exe_mod.linkSystemLibrary("ghostty", .{});
     exe_mod.linkSystemLibrary("objc", .{});
+    // Vigil's Zig code calls into AppKit/Foundation directly (all of the
+    // AppKit shell is Zig) -- link them explicitly instead of relying on
+    // the vendored dylib's own link line to load them as a side effect.
+    exe_mod.linkFramework("AppKit", .{});
+    exe_mod.linkFramework("Foundation", .{});
     exe_mod.addRPath(b.path(slice_dir));
 
     const exe = b.addExecutable(.{
@@ -80,19 +85,40 @@ pub fn build(b: *std.Build) void {
 }
 
 /// The xcframework contains one directory per platform slice, e.g.
-/// "macos-arm64" or "macos-arm64_x86_64". Find whichever one exists rather
-/// than hardcoding an architecture string.
+/// "macos-arm64" or "macos-arm64_x86_64". Find whichever one matches the
+/// host architecture rather than hardcoding an arch string, falling back to
+/// the first macOS slice if none does. Also verify the pre-linked
+/// libghostty.dylib actually exists, so a missing one fails with the
+/// actionable hint, not an opaque linker error.
 fn findXcframeworkSlice(b: *std.Build, xcframework_path: []const u8) ![]const u8 {
     const io = b.graph.io;
     var dir = try std.Io.Dir.cwd().openDir(io, xcframework_path, .{ .iterate = true });
     defer dir.close(io);
 
+    const host_arch: []const u8 = switch (b.graph.host.result.cpu.arch) {
+        .aarch64 => "arm64",
+        else => "x86_64",
+    };
+
+    var first: ?[]const u8 = null;
+    var matching: ?[]const u8 = null;
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         if (entry.kind != .directory) continue;
-        if (std.mem.startsWith(u8, entry.name, "macos-")) {
-            return b.pathJoin(&.{ xcframework_path, b.dupe(entry.name) });
-        }
+        if (!std.mem.startsWith(u8, entry.name, "macos-")) continue;
+        const name = b.dupe(entry.name);
+        if (first == null) first = name;
+        if (std.mem.indexOf(u8, name, host_arch) != null) matching = name;
     }
-    return error.NoMacOSSlice;
+    const name = matching orelse first orelse return error.NoMacOSSlice;
+    const slice = b.pathJoin(&.{ xcframework_path, name });
+
+    const dylib = b.pathJoin(&.{ slice, "libghostty.dylib" });
+    std.Io.Dir.cwd().access(io, dylib, .{}) catch
+        std.debug.panic(
+            "{s} is missing\n" ++
+                "Build libghostty first: `./scripts/build-ghostty.sh`\n",
+            .{dylib},
+        );
+    return slice;
 }

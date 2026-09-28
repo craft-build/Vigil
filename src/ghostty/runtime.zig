@@ -8,13 +8,7 @@ const c = @import("c.zig").c;
 const clipboard = @import("../app/clipboard.zig");
 const TerminalSurface = @import("../app/TerminalSurface.zig").TerminalSurface;
 const Window = @import("../app/Window.zig").Window;
-
-extern "c" var _dispatch_main_q: anyopaque;
-extern "c" fn dispatch_async_f(
-    queue: ?*anyopaque,
-    context: ?*anyopaque,
-    work: *const fn (?*anyopaque) callconv(.c) void,
-) void;
+const gcd = @import("../gcd.zig");
 
 pub const App = struct {
     app: c.ghostty_app_t = null,
@@ -48,7 +42,7 @@ pub const App = struct {
         // May be called from any thread (a PTY read thread, a renderer
         // thread, ...). ghostty_app_tick must run on the main thread, so we
         // hop over via GCD exactly like the Swift app does.
-        dispatch_async_f(&_dispatch_main_q, userdata, tickTrampoline);
+        gcd.dispatch_async_f(&gcd._dispatch_main_q, userdata, tickTrampoline);
     }
 
     fn tickTrampoline(userdata: ?*anyopaque) callconv(.c) void {
@@ -81,6 +75,15 @@ pub const App = struct {
         return Window.keyWindow();
     }
 
+    /// Legality hinges on two invariants, both documented in
+    /// vendor/ghostty's embedded API (embedded.zig / c.zig); if either
+    /// changes, this must be refactored (dupe + async completion), not
+    /// patched:
+    /// 1. `ghostty_surface_complete_clipboard_request` must be called
+    ///    synchronously from within the read callback on the main thread
+    ///    (we return STARTED only after it completes).
+    /// 2. The clipboard text is only *borrowed* for the duration of that
+    ///    complete call, so `text` never needs to outlive this function.
     fn readClipboard(
         userdata: ?*anyopaque,
         location: c.ghostty_clipboard_e,

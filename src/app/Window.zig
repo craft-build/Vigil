@@ -46,13 +46,7 @@ const settings = @import("settings.zig");
 const themes = @import("themes.zig");
 const keybindings = @import("keybindings.zig");
 const keymonitor = @import("keymonitor.zig");
-
-extern "c" var _dispatch_main_q: anyopaque;
-extern "c" fn dispatch_async_f(
-    queue: ?*anyopaque,
-    context: ?*anyopaque,
-    work: *const fn (?*anyopaque) callconv(.c) void,
-) void;
+const gcd = @import("../gcd.zig");
 
 const PaneTree = pane.Tree(*TerminalSurface);
 const Pane = PaneTree.Pane;
@@ -139,6 +133,10 @@ pub const Window = struct {
             @as(u64, 2), // NSBackingStoreBuffered
             false,
         });
+        // On the failed-create path, drop the whole window (and its view
+        // tree) without firing `windowWillClose` -- `close` would tear
+        // down against half-initialized `self`.
+        errdefer window.msgSend(void, "release", .{});
         window.msgSend(void, "setTitle:", .{appkit.nsString("Vigil")});
         window.msgSend(void, "setTitleVisibility:", .{@as(i64, 1)}); // NSWindowTitleHidden
         window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
@@ -178,6 +176,9 @@ pub const Window = struct {
         // `contentSetFrameSize` safely no-ops during construction instead
         // of calling `relayoutAll` against not-yet-initialized fields.
         window.msgSend(void, "setContentView:", .{content});
+        // The window retains its content view; our alloc-time +1 goes to
+        // the pool (same reasoning as `appkit.addSubview`).
+        content.msgSend(void, "autorelease", .{});
 
         // Vigil-only preference (not a libghostty key, so it lives in
         // `settings.ui_store`); read once here -- changing it takes effect
@@ -197,9 +198,12 @@ pub const Window = struct {
         };
         content.setInstanceVariable("vigilOwner", .{ .value = @ptrCast(self) });
         shared_app = app;
-        try all.append(std.heap.c_allocator, self);
 
+        // Register in `all` only once construction can no longer fail, so
+        // the `forNSWindow`/`keyWindow`/`isLive` scans never see a pointer
+        // the `errdefer` above is about to free.
         try self.newTab(null);
+        try all.append(std.heap.c_allocator, self);
         return self;
     }
 
@@ -281,9 +285,30 @@ pub const Window = struct {
     /// `self` from `all`, and frees `self`. Does *not* terminate the app,
     /// even if this was the last window -- that's `GHOSTTY_ACTION_QUIT`
     /// alone now, matching normal macOS app behavior.
+    /// True while `p` still points at an open window. Late callbacks
+    /// (rename commits, queued click handlers) can fire after
+    /// `windowWillClose` freed their owner; every owner-ivar trampoline
+    /// below guards on this before casting.
+    pub fn isLive(p: ?*anyopaque) bool {
+        const w: *Window = @ptrCast(@alignCast(p orelse return false));
+        for (all.items) |open| {
+            if (open == w) return true;
+        }
+        return false;
+    }
+
     fn windowWillClose(id: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
         const owner = (objc.Object{ .value = id }).getInstanceVariable("vigilOwner").value orelse return;
         const self: *Window = @ptrCast(@alignCast(owner));
+
+        // Kill anything that outlives this window and would otherwise
+        // fire against a freed `*Window`: an in-flight rename, and any
+        // modal hosted by this window (only this window's -- an overlay
+        // open elsewhere must stay up).
+        rename_field.cancel();
+        palette.hideIfHostedBy(self.content);
+        shortcuts_sheet.hideIfHostedBy(self.content);
+        theme_gallery.hideIfHostedBy(self.content);
 
         for (all.items, 0..) |w, i| {
             if (w == self) {
@@ -425,6 +450,10 @@ pub const Window = struct {
             @as(i64, -1), // NSWindowBelow
             @as(?*anyopaque, null),
         });
+        // Hand the alloc-time +1 to the superview (via the pool, like
+        // `appkit.addSubview` -- `rebuildDividers` can run mid-drag, so a
+        // straight `release` could dealloc the view mid-event).
+        view.msgSend(void, "autorelease", .{});
         return view;
     }
 
@@ -492,7 +521,7 @@ pub const Window = struct {
         };
 
         surface.view.msgSend(void, "removeFromSuperview", .{});
-        dispatch_async_f(&_dispatch_main_q, surface, freeSurface);
+        gcd.dispatch_async_f(&gcd._dispatch_main_q, surface, freeSurface);
 
         if (tab.zoomed == surface) tab.zoomed = null;
         tab.focused = focus_after;
@@ -529,8 +558,13 @@ pub const Window = struct {
 
     fn detachLeaf(self: *Window, ts: *TerminalSurface) void {
         _ = self;
+        // The owning Window is gone by the time the deferred free runs;
+        // null this so any late libghostty callback (`closeSurface`,
+        // `resolveWindow`) hits its `owner orelse return` guard instead of
+        // dereferencing the freed `*Window`.
+        ts.owner = null;
         ts.view.msgSend(void, "removeFromSuperview", .{});
-        dispatch_async_f(&_dispatch_main_q, ts, freeSurface);
+        gcd.dispatch_async_f(&gcd._dispatch_main_q, ts, freeSurface);
     }
 
     fn freeSurface(ctx: ?*anyopaque) callconv(.c) void {
@@ -615,22 +649,26 @@ pub const Window = struct {
     // to the real (per-instance) method below.
 
     fn dispatchTabClick(owner: ?*anyopaque, index: usize) void {
-        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        if (!isLive(owner)) return;
+        const self: *Window = @ptrCast(@alignCast(owner.?));
         self.onTabClick(index);
     }
 
     fn dispatchTabDoubleClick(owner: ?*anyopaque, index: usize) void {
-        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        if (!isLive(owner)) return;
+        const self: *Window = @ptrCast(@alignCast(owner.?));
         self.onTabDoubleClick(index);
     }
 
     fn dispatchTabClose(owner: ?*anyopaque, index: usize) void {
-        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        if (!isLive(owner)) return;
+        const self: *Window = @ptrCast(@alignCast(owner.?));
         self.onTabCloseClick(index);
     }
 
     fn dispatchRenameCommit(owner: ?*anyopaque, index: usize, text: []const u8) void {
-        const self: *Window = @ptrCast(@alignCast(owner orelse return));
+        if (!isLive(owner)) return;
+        const self: *Window = @ptrCast(@alignCast(owner.?));
         self.onRenameCommit(index, text);
     }
 
@@ -642,7 +680,8 @@ pub const Window = struct {
     /// `TerminalSurface.on_click`'s single global handler: the surface
     /// itself already carries `.owner`, so no ivar lookup is needed here.
     fn dispatchSurfaceClick(ts: *TerminalSurface) void {
-        const self: *Window = @ptrCast(@alignCast(ts.owner orelse return));
+        if (!isLive(ts.owner)) return;
+        const self: *Window = @ptrCast(@alignCast(ts.owner.?));
         self.onSurfaceClicked(ts);
     }
 
@@ -738,9 +777,19 @@ pub const Window = struct {
                 return;
             }
             const self = keyWindow() orelse return;
+            // One modal at a time (overlay.zig's single dismiss callback
+            // assumes it): hide the others before showing any overlay.
             switch (action) {
-                .show_shortcuts => shortcuts_sheet.show(self.content),
-                .show_themes => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
+                .show_shortcuts => {
+                    palette.hide();
+                    theme_gallery.hide();
+                    shortcuts_sheet.show(self.content);
+                },
+                .show_themes => {
+                    palette.hide();
+                    shortcuts_sheet.hide();
+                    theme_gallery.show(self.content, themes.currentIndex(&settings.store));
+                },
                 .show_preferences => preferences_window.show(),
                 .new_window => unreachable, // handled above
             }
@@ -784,9 +833,18 @@ pub const Window = struct {
     fn onPreferencesButton(action: prefs.ButtonAction) void {
         const self = keyWindow() orelse return;
         self.window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
+        // One modal at a time -- see runCommand.
         switch (action) {
-            .choose_theme => theme_gallery.show(self.content, themes.currentIndex(&settings.store)),
-            .show_shortcuts => shortcuts_sheet.show(self.content),
+            .choose_theme => {
+                palette.hide();
+                shortcuts_sheet.hide();
+                theme_gallery.show(self.content, themes.currentIndex(&settings.store));
+            },
+            .show_shortcuts => {
+                palette.hide();
+                theme_gallery.hide();
+                shortcuts_sheet.show(self.content);
+            },
         }
     }
 
@@ -889,7 +947,11 @@ pub const Window = struct {
                 return true;
             },
             ghc.GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE => {
-                if (shortcuts_sheet.isVisible() or theme_gallery.isVisible()) return true;
+                // Opening the palette dismisses any other overlay (one
+                // modal at a time -- see runCommand); toggling an open
+                // palette closed is unaffected by the extra hides.
+                shortcuts_sheet.hide();
+                theme_gallery.hide();
                 palette.toggle(self.content);
                 return true;
             },

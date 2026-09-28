@@ -11,6 +11,11 @@ const keybindings = @import("app/keybindings.zig");
 const settings = @import("app/settings.zig");
 const menu = @import("app/menu.zig");
 
+/// File scope, not a local in `main`: the `GhosttyApp`'s address is handed
+/// to libghostty as its runtime `userdata`, and that pointer must not
+/// depend on a stack frame.
+var app_storage: GhosttyApp = .{};
+
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
 
@@ -28,7 +33,7 @@ pub fn main() !void {
 
     keybindings.init(config);
 
-    var app: GhosttyApp = .{};
+    const app = &app_storage;
     try app.init(config);
     defer app.deinit();
     ghc.ghostty_app_set_focus(app.app, true);
@@ -36,10 +41,15 @@ pub fn main() !void {
     const NSApp = appkit.class("NSApplication").msgSend(objc.Object, "sharedApplication", .{});
     NSApp.msgSend(void, "setActivationPolicy:", .{@as(i64, 0)}); // NSApplicationActivationPolicyRegular
 
+    // `addSubview` drops references via `autorelease` (see appkit.zig);
+    // anything built before the run loop starts (the first window's chrome)
+    // would otherwise autorelease with no pool in place and leak.
+    const pool = appkit.class("NSAutoreleasePool").msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
     Window.installGlobalHandlers();
     const window = try Window.create(allocator, app.app);
     menu.install();
     window.show();
+    pool.msgSend(void, "drain", .{});
     NSApp.msgSend(void, "activateIgnoringOtherApps:", .{true});
     NSApp.msgSend(void, "run", .{});
 }

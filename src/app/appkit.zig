@@ -1,10 +1,12 @@
 //! Small AppKit helpers shared across Vigil's UI code. Everything here is
-//! thin, direct Objective-C runtime calls via zig-objc -- there is no
-//! retain/release discipline beyond what's noted inline. Vigil's chrome is
-//! built once at startup and lives for the process lifetime, so the handful
-//! of objects this leaks (autoreleased-only NSStrings/NSColors used as
-//! immediate arguments) are a deliberate, acceptable simplification for this
-//! vertical slice, not an oversight.
+//! thin, direct Objective-C runtime calls via zig-objc. Vigil uses manual
+//! retain/release: fresh `alloc`/`init` views start at +1, and `addSubview`
+//! hands that reference to the new superview (see its comment) -- this is
+//! deliberately *not* "everything leaks", because several containers
+//! (command palette, tab bar, sidebar) rebuild their contents wholesale on
+//! ordinary user actions. What does remain autoreleased-only
+//! (NSStrings/NSColors used as immediate arguments) is a deliberate,
+//! acceptable simplification.
 const objc = @import("objc");
 const theme = @import("../ui/theme.zig");
 
@@ -81,8 +83,16 @@ pub fn newView(frame: NSRect) objc.Object {
         .msgSend(objc.Object, "initWithFrame:", .{frame});
 }
 
+/// Adds `child` to `parent` and transfers ownership of the caller's
+/// alloc-time +1 to the superview. Only safe because every call site adds a
+/// freshly-allocated view that never gets re-parented. Dropping the +1 via
+/// `autorelease` (rather than `release`) means a rebuild triggered from an
+/// event handler can't dealloc the view mid-dispatch.
 pub fn addSubview(parent: objc.Object, child: objc.Object) void {
     parent.msgSend(void, "addSubview:", .{child});
+    // Superview now owns it; drop our alloc-time +1 via the pool so
+    // in-event rebuilds can't dealloc the view mid-dispatch.
+    child.msgSend(void, "autorelease", .{});
 }
 
 /// Removes every subview of `view`. Used before rebuilding a container's

@@ -58,6 +58,15 @@ pub fn show(parent: objc.Object) void {
 pub fn hide() void {
     if (overlay) |view| view.msgSend(void, "removeFromSuperview", .{});
     overlay = null;
+    host = null;
+}
+
+/// Hides only if the palette is hosted by `parent` -- a closing window
+/// invalidates its content view and everything in it, but must not
+/// dismiss a palette open in a *different* window.
+pub fn hideIfHostedBy(parent: objc.Object) void {
+    const h = host orelse return;
+    if (h.value == parent.value) hide();
 }
 
 /// Feeds a key event to the open palette. Returns true if consumed;
@@ -217,7 +226,7 @@ fn render() void {
         }
     }
 
-    parent.msgSend(void, "addSubview:", .{backdrop});
+    appkit.addSubview(parent, backdrop);
     overlay = backdrop;
 }
 

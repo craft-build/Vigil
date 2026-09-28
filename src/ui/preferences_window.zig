@@ -239,6 +239,7 @@ fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pan
         },
         .choice => |options| {
             var labels: [4]objc.c.id = undefined;
+            std.debug.assert(options.len <= labels.len);
             for (options, 0..) |o, i| labels[i] = appkit.nsString(o).value;
             const array = appkit.class("NSArray").msgSend(objc.Object, "arrayWithObjects:count:", .{
                 @as([*]objc.c.id, &labels),
@@ -249,6 +250,7 @@ fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pan
                 "segmentedControlWithLabels:trackingMode:target:action:",
                 .{ array, @as(i64, 0), target, objc.sel("changed:").value },
             );
+            seg.msgSend(void, "retain", .{});
             seg.msgSend(void, "setFrame:", .{appkit.rect(right - control_w, cy, control_w, 28)});
             seg.msgSend(void, "setSelectedSegment:", .{@as(i64, @intCast(setting.read.?(storeFor(setting)).index))});
             seg.msgSend(void, "setTag:", .{@as(i64, @intCast(index))});
@@ -301,6 +303,7 @@ fn buildRow(view: objc.Object, index: usize, setting: prefs.Setting, y: f64, pan
                 "buttonWithTitle:target:action:",
                 .{ appkit.nsString(b.title), target, objc.sel("changed:").value },
             );
+            button.msgSend(void, "retain", .{});
             button.msgSend(void, "setFrame:", .{appkit.rect(right - control_w, cy, control_w, 28)});
             button.msgSend(void, "setTag:", .{@as(i64, @intCast(index))});
             appkit.addSubview(view, button);
@@ -383,7 +386,8 @@ fn changed(_: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) void {
         },
         .text => {
             const str = control.msgSend(objc.Object, "stringValue", .{});
-            value = .{ .text = std.mem.span(str.msgSend([*:0]const u8, "UTF8String", .{})) };
+            const text = str.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return;
+            value = .{ .text = std.mem.span(text) };
         },
         .button => |b| {
             if (on_button) |cb| cb(b.action);

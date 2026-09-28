@@ -16,7 +16,7 @@ default:
 
 # Day-to-day dev build (unoptimized); see README.md for the one-time setup.
 build:
-    zig build
+    zig build --release=safe
 
 # Build and run Vigil directly from zig-out, not from the .app bundle.
 run *args:

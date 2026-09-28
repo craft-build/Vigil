@@ -54,6 +54,14 @@ pub fn show(parent: objc.Object, current: ?usize) void {
 pub fn hide() void {
     if (overlay) |view| view.msgSend(void, "removeFromSuperview", .{});
     overlay = null;
+    host = null;
+}
+
+/// Hides only if the gallery is hosted by `parent` -- see palette.zig's
+/// `hideIfHostedBy`.
+pub fn hideIfHostedBy(parent: objc.Object) void {
+    const h = host orelse return;
+    if (h.value == parent.value) hide();
 }
 
 pub fn setApplied(index: ?usize) void {
@@ -136,7 +144,7 @@ fn render() void {
         appkit.addSubview(panel, buildCard(t, i, x, y));
     }
 
-    parent.msgSend(void, "addSubview:", .{backdrop});
+    appkit.addSubview(parent, backdrop);
     overlay = backdrop;
 }
 

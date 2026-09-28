@@ -280,6 +280,7 @@ pub fn iconGlyph(size: f64, symbol_name: [:0]const u8, accessibility_label: [:0]
     );
     if (symbol.value != null) {
         const icon = appkit.class("NSImageView").msgSend(objc.Object, "imageViewWithImage:", .{symbol});
+        icon.msgSend(void, "retain", .{});
         icon.msgSend(void, "setFrame:", .{appkit.rect(4, 4, size - 8, size - 8)});
         icon.msgSend(void, "setContentTintColor:", .{appkit.nsColor(theme.colors.text_tertiary)});
         return icon;
@@ -370,13 +371,23 @@ fn newTabClicked(owner: ?*anyopaque, _: usize) void {
     if (on_tab_click) |cb| cb(owner, plus_index);
 }
 
+/// Last tab count rendered into the bar -- see the `rename_field.cancel`
+/// guard in `populateTabs`. Pill geometry depends on the *count*, not per
+/// tab titles, so only a count change can strand an in-progress rename field.
+var last_tab_count: ?usize = null;
+
 /// Replaces the tabs in `bar` with one per title, highlighting `active`.
 /// `owner` is stashed on every tab/button built so the click callbacks
 /// above can tell which window they're for.
 pub fn populateTabs(bar: *TabBar, titles: []const [:0]const u8, active: usize, owner: ?*anyopaque) void {
-    // The tab layout is about to change under any in-progress rename field
-    // (which lives on `bar.bar`, so it would otherwise survive misplaced).
-    rename_field.cancel();
+    // A tab added/closed shifts every pill, stranding an in-progress rename
+    // field (which lives on `bar.bar`, so it would otherwise survive
+    // misplaced). A title-only refresh doesn't move anything -- let the
+    // rename keep editing through shell title updates.
+    if (last_tab_count != titles.len) {
+        rename_field.cancel();
+        last_tab_count = titles.len;
+    }
     appkit.removeAllSubviews(bar.group);
 
     const bar_bounds = bar.bar.msgSend(appkit.NSRect, "bounds", .{});
