@@ -222,7 +222,7 @@ pub fn Tree(comptime Leaf: type) type {
     };
 }
 
-pub const divider_thickness: f64 = 6;
+pub const divider_thickness: f64 = 3;
 
 /// Splits `rect` into two child rects for a split with `direction` and
 /// `ratio`, separated by a `divider_thickness`-wide gap. Pure geometry --
@@ -413,20 +413,20 @@ test "setRatio clamps away from the edges" {
 test "splitRect: horizontal divides width, keeps full height, leaves a gap" {
     const rect = appkit.rect(0, 0, 100, 50);
     const parts = splitRect(rect, .horizontal, 0.5);
-    try std.testing.expectEqual(@as(f64, 47), parts.first.size.width); // 50 - half_gap(3)
+    try std.testing.expectEqual(@as(f64, 48.5), parts.first.size.width); // 50 - half_gap(1.5)
     try std.testing.expectEqual(@as(f64, 50), parts.first.size.height);
     try std.testing.expectEqual(@as(f64, 0), parts.first.origin.x);
-    try std.testing.expectEqual(@as(f64, 53), parts.second.origin.x);
-    try std.testing.expectEqual(@as(f64, 47), parts.second.size.width);
+    try std.testing.expectEqual(@as(f64, 51.5), parts.second.origin.x);
+    try std.testing.expectEqual(@as(f64, 48.5), parts.second.size.width);
 }
 
 test "splitRect: vertical puts first at the top (higher y)" {
     const rect = appkit.rect(0, 0, 100, 50);
     const parts = splitRect(rect, .vertical, 0.5);
-    try std.testing.expectEqual(@as(f64, 28), parts.first.origin.y); // 25 + half_gap(3)
-    try std.testing.expectEqual(@as(f64, 22), parts.first.size.height);
+    try std.testing.expectEqual(@as(f64, 26.5), parts.first.origin.y); // 25 + half_gap(1.5)
+    try std.testing.expectEqual(@as(f64, 23.5), parts.first.size.height);
     try std.testing.expectEqual(@as(f64, 0), parts.second.origin.y);
-    try std.testing.expectEqual(@as(f64, 22), parts.second.size.height);
+    try std.testing.expectEqual(@as(f64, 23.5), parts.second.size.height);
 }
 
 test "splitRect: ratio is consistently first's share on both axes" {
@@ -435,13 +435,13 @@ test "splitRect: ratio is consistently first's share on both axes" {
     const rect = appkit.rect(0, 0, 100, 100);
 
     const h = splitRect(rect, .horizontal, 0.25);
-    try std.testing.expectEqual(@as(f64, 22), h.first.size.width); // 100*0.25 - half_gap(3)
-    try std.testing.expectEqual(@as(f64, 72), h.second.size.width); // 100*0.75 - 3
+    try std.testing.expectEqual(@as(f64, 23.5), h.first.size.width); // 100*0.25 - half_gap(1.5)
+    try std.testing.expectEqual(@as(f64, 73.5), h.second.size.width); // 100*0.75 - 1.5
 
     const v = splitRect(rect, .vertical, 0.25);
-    try std.testing.expectEqual(@as(f64, 22), v.first.size.height); // top: 100*0.25 - 3
-    try std.testing.expectEqual(@as(f64, 72), v.second.size.height); // bottom: 100*0.75 - 3
-    try std.testing.expectEqual(@as(f64, 78), v.first.origin.y); // 100 - 22
+    try std.testing.expectEqual(@as(f64, 23.5), v.first.size.height); // top: 100*0.25 - 1.5
+    try std.testing.expectEqual(@as(f64, 73.5), v.second.size.height); // bottom: 100*0.75 - 1.5
+    try std.testing.expectEqual(@as(f64, 76.5), v.first.origin.y); // 100 - 23.5
 }
 
 test "splitRect never produces a negative size at extreme ratios" {
