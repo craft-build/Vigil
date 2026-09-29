@@ -335,6 +335,12 @@ pub const TabBar = struct {
     /// `beginRename` to place the rename field over the right tab.
     tab_item_frames: [64]appkit.NSRect = undefined,
     tab_item_count: usize = 0,
+    /// Last tab count rendered into this bar -- see the `rename_field.cancel`
+    /// guard in `populateTabs`. Per-bar, not file-global: a tab count change
+    /// in one window must not disturb another window's bar (or its rename).
+    /// Pill geometry depends on the count, not per-tab titles, so only a
+    /// count change can strand an in-progress rename field.
+    last_tab_count: ?usize = null,
 };
 
 /// Builds the top tab bar and adds it to `parent`. `width` is the parent's
@@ -371,11 +377,6 @@ fn newTabClicked(owner: ?*anyopaque, _: usize) void {
     if (on_tab_click) |cb| cb(owner, plus_index);
 }
 
-/// Last tab count rendered into the bar -- see the `rename_field.cancel`
-/// guard in `populateTabs`. Pill geometry depends on the *count*, not per
-/// tab titles, so only a count change can strand an in-progress rename field.
-var last_tab_count: ?usize = null;
-
 /// Replaces the tabs in `bar` with one per title, highlighting `active`.
 /// `owner` is stashed on every tab/button built so the click callbacks
 /// above can tell which window they're for.
@@ -384,9 +385,9 @@ pub fn populateTabs(bar: *TabBar, titles: []const [:0]const u8, active: usize, o
     // field (which lives on `bar.bar`, so it would otherwise survive
     // misplaced). A title-only refresh doesn't move anything -- let the
     // rename keep editing through shell title updates.
-    if (last_tab_count != titles.len) {
+    if (bar.last_tab_count != titles.len) {
         rename_field.cancel();
-        last_tab_count = titles.len;
+        bar.last_tab_count = titles.len;
     }
     appkit.removeAllSubviews(bar.group);
 
