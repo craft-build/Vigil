@@ -341,6 +341,10 @@ pub const TabBar = struct {
     /// Pill geometry depends on the count, not per-tab titles, so only a
     /// count change can strand an in-progress rename field.
     last_tab_count: ?usize = null,
+    /// Content width the bar was last populated at -- lets a window resize
+    /// repopulate only when the width actually changed (see
+    /// `Window.reflowChrome`).
+    last_bar_width: ?f64 = null,
 };
 
 /// Builds the top tab bar and adds it to `parent`. `width` is the parent's
@@ -392,6 +396,7 @@ pub fn populateTabs(bar: *TabBar, titles: []const [:0]const u8, active: usize, o
     appkit.removeAllSubviews(bar.group);
 
     const bar_bounds = bar.bar.msgSend(appkit.NSRect, "bounds", .{});
+    bar.last_bar_width = bar_bounds.size.width;
     bar.group.msgSend(void, "setFrame:", .{appkit.rect(
         window_controls_width,
         (tab_bar_height - tab_row_height) / 2,

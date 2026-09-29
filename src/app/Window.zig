@@ -375,6 +375,23 @@ pub const Window = struct {
         const owner = obj.getInstanceVariable("vigilOwner").value orelse return;
         const self: *Window = @ptrCast(@alignCast(owner));
         self.relayoutAll();
+        self.reflowChrome();
+    }
+
+    /// The horizontal tab bar is laid out by hand (no Auto Layout), so a
+    /// content resize doesn't move its pills or "+" button -- its `group` and
+    /// each pill keep the width computed at the last `populateTabs`, and the
+    /// `tab_item_frames` a later rename reads go stale. Repopulate it at the
+    /// new width, but only when the width actually changed (a live resize
+    /// fires this on every step). The vertical sidebar is a fixed-width
+    /// column, so its rows need no reflow. The rename field lives on the bar
+    /// itself (not `group`), so this never sweeps an in-progress rename away
+    /// -- and the per-bar count guard keeps it from being cancelled either.
+    fn reflowChrome(self: *Window) void {
+        if (self.chrome_ui == .vertical) return;
+        const width = self.content.msgSend(appkit.NSRect, "bounds", .{}).size.width;
+        if (self.chrome_ui.horizontal.last_bar_width == width) return;
+        self.refreshTabBar();
     }
 
     /// Re-lays-out every tab's pane tree against the current content size.
