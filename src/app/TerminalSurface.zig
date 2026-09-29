@@ -104,16 +104,24 @@ pub const TerminalSurface = struct {
         // `viewDidChangeBackingProperties` (Ghostty issue #2731), so watch for
         // the screen change and re-sync the backing explicitly. The same
         // notification carries the screen whose display ID libghostty wants
-        // (for vsync / refresh-rate matching).
+        // (for vsync / refresh-rate matching). Become/resign-key are watched
+        // so libghostty's notion of focus tracks the window, not just which
+        // pane is first responder.
+        observe(view, "windowDidChangeScreen:", "NSWindowDidChangeScreenNotification");
+        observe(view, "windowDidBecomeKey:", "NSWindowDidBecomeKeyNotification");
+        observe(view, "windowDidResignKey:", "NSWindowDidResignKeyNotification");
+        return self;
+    }
+
+    fn observe(view: objc.Object, selector: [:0]const u8, name: [:0]const u8) void {
         appkit.class("NSNotificationCenter")
             .msgSend(objc.Object, "defaultCenter", .{})
             .msgSend(void, "addObserver:selector:name:object:", .{
             view,
-            objc.sel("windowDidChangeScreen:"),
-            appkit.nsString("NSWindowDidChangeScreenNotification"),
+            objc.sel(selector),
+            appkit.nsString(name),
             @as(?*anyopaque, null),
         });
-        return self;
     }
 
     /// Recovers the TerminalSurface from a libghostty surface handle
@@ -124,11 +132,14 @@ pub const TerminalSurface = struct {
     }
 
     /// Shows or hides the tab's view and tells libghostty so it can pause
-    /// rendering for hidden tabs.
+    /// rendering for hidden tabs. Keyboard focus is *not* decided here:
+    /// `syncFocus` derives it from the window's key state and first responder
+    /// (see `becomeFirstResponder`/`resignFirstResponder` and the key
+    /// notifications), so a visible tab in a background window isn't reported
+    /// as focused.
     pub fn setVisible(self: *TerminalSurface, visible: bool) void {
         self.view.msgSend(void, "setHidden:", .{!visible});
         ghc.ghostty_surface_set_occlusion(self.surface, visible);
-        ghc.ghostty_surface_set_focus(self.surface, visible);
     }
 
     /// The view is always removed from its superview (by `detachLeaf` or
@@ -157,11 +168,15 @@ pub const TerminalSurface = struct {
         _ = cls.addIvar("vigilSelf");
 
         std.debug.assert(cls.addMethod("acceptsFirstResponder", acceptsFirstResponder));
+        std.debug.assert(cls.addMethod("becomeFirstResponder", becomeFirstResponder));
+        std.debug.assert(cls.addMethod("resignFirstResponder", resignFirstResponder));
         std.debug.assert(cls.addMethod("keyDown:", keyDown));
         std.debug.assert(cls.addMethod("keyUp:", keyUp));
         std.debug.assert(cls.addMethod("setFrameSize:", setFrameSize));
         std.debug.assert(cls.addMethod("viewDidChangeBackingProperties", viewDidChangeBackingProperties));
         std.debug.assert(cls.addMethod("windowDidChangeScreen:", windowDidChangeScreen));
+        std.debug.assert(cls.addMethod("windowDidBecomeKey:", windowDidBecomeKey));
+        std.debug.assert(cls.addMethod("windowDidResignKey:", windowDidResignKey));
         std.debug.assert(cls.addMethod("updateTrackingAreas", updateTrackingAreas));
         std.debug.assert(cls.addMethod("mouseDown:", mouseDown));
         std.debug.assert(cls.addMethod("mouseUp:", mouseUp));
@@ -190,6 +205,37 @@ pub const TerminalSurface = struct {
         _ = id;
         _ = sel;
         return true;
+    }
+
+    fn becomeFirstResponder(id: objc.c.id, sel: objc.c.SEL) callconv(.c) bool {
+        const obj = objc.Object{ .value = id };
+        const result = obj.msgSendSuper(appkit.class("NSView"), bool, objc.Sel{ .value = sel }, .{});
+        if (result) syncFocus(selfOf(id));
+        return result;
+    }
+
+    /// Force focus off on resignation. `syncFocus` can't be used here: AppKit
+    /// still reports this view as the window's first responder while
+    /// `resignFirstResponder` runs, so it would re-report focus as on.
+    fn resignFirstResponder(id: objc.c.id, sel: objc.c.SEL) callconv(.c) bool {
+        const obj = objc.Object{ .value = id };
+        const result = obj.msgSendSuper(appkit.class("NSView"), bool, objc.Sel{ .value = sel }, .{});
+        if (result) ghc.ghostty_surface_set_focus(selfOf(id).surface, false);
+        return result;
+    }
+
+    /// Tells libghostty this surface has keyboard focus only when its window
+    /// is actually key and this view is the window's first responder (which
+    /// it is while editing a rename field, for instance, so the terminal is
+    /// correctly *not* focused then).
+    fn syncFocus(self: *TerminalSurface) void {
+        const window = self.view.msgSend(objc.Object, "window", .{});
+        var focused = false;
+        if (window.value != null) {
+            const first = window.msgSend(objc.Object, "firstResponder", .{});
+            focused = window.msgSend(bool, "isKeyWindow", .{}) and first.value == self.view.value;
+        }
+        ghc.ghostty_surface_set_focus(self.surface, focused);
     }
 
     /// The view's window scale when attached, else the main screen's --
@@ -282,6 +328,28 @@ pub const TerminalSurface = struct {
         const screen = window.msgSend(objc.Object, "screen", .{});
         if (screen.value != null) ghc.ghostty_surface_set_display_id(self.surface, displayId(screen));
         gcd.dispatch_async_f(&gcd._dispatch_main_q, self, resyncBacking);
+    }
+
+    /// The window's first responder doesn't change when the window gains or
+    /// loses key, so become/resign-first-responder alone can't track app
+    /// activation -- these notifications close that gap.
+    fn windowDidBecomeKey(id: objc.c.id, _: objc.c.SEL, note: objc.c.id) callconv(.c) void {
+        const self = selfOf(id);
+        if (notificationWindow(note, self.view)) syncFocus(self);
+    }
+
+    fn windowDidResignKey(id: objc.c.id, _: objc.c.SEL, note: objc.c.id) callconv(.c) void {
+        const self = selfOf(id);
+        if (notificationWindow(note, self.view)) ghc.ghostty_surface_set_focus(self.surface, false);
+    }
+
+    /// True when `note` was posted by `view`'s own window (observers are
+    /// registered with a nil object, so every surface sees every window's
+    /// notifications).
+    fn notificationWindow(note: objc.c.id, view: objc.Object) bool {
+        const window = view.msgSend(objc.Object, "window", .{});
+        if (window.value == null) return false;
+        return (objc.Object{ .value = note }).msgSend(objc.Object, "object", .{}).value == window.value;
     }
 
     fn resyncBacking(ctx: ?*anyopaque) callconv(.c) void {
