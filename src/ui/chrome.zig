@@ -386,7 +386,7 @@ pub fn populateTabs(bar: *TabBar, titles: []const [:0]const u8, active: usize, o
     // misplaced). A title-only refresh doesn't move anything -- let the
     // rename keep editing through shell title updates.
     if (bar.last_tab_count != titles.len) {
-        rename_field.cancel();
+        rename_field.cancelIfInWindow(bar.bar.msgSend(objc.Object, "window", .{}));
         bar.last_tab_count = titles.len;
     }
     appkit.removeAllSubviews(bar.group);

@@ -15,6 +15,10 @@ var field: ?objc.Object = null;
 var target_obj: ?objc.Object = null;
 var target_class: ?objc.Class = null;
 var commit_cb: ?OnCommit = null;
+/// The NSWindow the active field is hosted in (nil when no rename is active).
+/// Lets a window's teardown/refresh cancel only its *own* rename instead of
+/// whichever one happens to be open app-wide.
+var host_window: ?objc.Object = null;
 /// True only while `end` is detaching the field. Removing a view that is
 /// still the window's first responder makes AppKit resign it right there,
 /// which -- since the field has `sendsActionOnEndEditing` -- re-fires
@@ -64,6 +68,7 @@ pub fn begin(
     window.msgSend(objc.Object, "fieldEditor:forObject:", .{ true, f })
         .msgSend(void, "selectAll:", .{@as(?*anyopaque, null)});
 
+    host_window = window;
     field = f;
 }
 
@@ -72,9 +77,18 @@ pub fn cancel() void {
     end();
 }
 
+/// Ends an in-progress rename only when it is hosted in `win` (an NSWindow).
+/// Used so one window closing or restructuring can't cancel a rename in
+/// another window.
+pub fn cancelIfInWindow(win: objc.Object) void {
+    const w = host_window orelse return;
+    if (w.value == win.value) end();
+}
+
 fn end() void {
     const f = field orelse return;
     field = null; // clear first: see `handling_end` above
+    host_window = null;
     handling_end = true;
     f.msgSend(void, "removeFromSuperview", .{});
     handling_end = false;

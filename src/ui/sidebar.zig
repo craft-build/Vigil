@@ -169,7 +169,7 @@ pub fn populate(self: *Sidebar, titles: []const [:0]const u8, active: usize, own
     // Same structural-vs-title-only distinction as chrome.populateTabs:
     // adding/closing a tab strand the rename field, title refreshes don't.
     if (self.last_tab_count != titles.len) {
-        rename_field.cancel();
+        rename_field.cancelIfInWindow(self.container.msgSend(objc.Object, "window", .{}));
         self.last_tab_count = titles.len;
     }
     appkit.removeAllSubviews(self.list);

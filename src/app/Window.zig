@@ -328,9 +328,9 @@ pub const Window = struct {
 
         // Kill anything that outlives this window and would otherwise
         // fire against a freed `*Window`: an in-flight rename, and any
-        // modal hosted by this window (only this window's -- an overlay
-        // open elsewhere must stay up).
-        rename_field.cancel();
+        // modal hosted by this window (only this window's -- an overlay or
+        // rename in another window must stay up).
+        rename_field.cancelIfInWindow(self.window);
         palette.hideIfHostedBy(self.content);
         shortcuts_sheet.hideIfHostedBy(self.content);
         theme_gallery.hideIfHostedBy(self.content);
