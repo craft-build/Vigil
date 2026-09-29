@@ -1,6 +1,16 @@
 //! Full-window dimmed backdrop used by modal panels (shortcuts sheet,
 //! command palette). Clicking the backdrop -- but not the panel on top of
 //! it -- calls the dismiss callback.
+//!
+//! Only one modal is ever on screen *app-wide*, not per window: every overlay
+//! module (palette, theme gallery, shortcuts sheet) has a single process-global
+//! instance, and the show sites hide the other two before showing one (see
+//! `Window.runCommand`). So opening an overlay in a second window moves it
+//! there, dismissing one open in the first. That is deliberate: a single
+//! `dismiss_cb` and a single host view keep this file trivial, and the
+//! workflows these panels serve are one-shot (pick a command/theme, read the
+//! shortcut list). Only Preferences is a genuine second window, and it is
+//! never hidden by this rule.
 const std = @import("std");
 const objc = @import("objc");
 const appkit = @import("../app/appkit.zig");
