@@ -2,8 +2,12 @@
 //! makes the view layer-backed and attaches its own CAMetalLayer + Metal
 //! renderer the moment ghostty_surface_new() is called with the view's
 //! pointer -- confirmed by vendor/ghostty's Swift SurfaceView_AppKit.swift,
-//! which never touches CALayer/CAMetalLayer itself. Our job is just: give it
-//! a view, and forward keyboard input + resize/focus notifications.
+//! which never creates the layer itself. It does, however, keep the layer's
+//! `contentsScale` in step with the window's backing scale (see its
+//! `viewDidChangeBackingProperties`); we mirror that here so moving the
+//! window between displays of different DPI doesn't leave Core Animation
+//! compositing the surface at the old scale. Our job is otherwise: give it a
+//! view, and forward keyboard input + resize/focus notifications.
 //!
 //! IME (marked text/preedit) is not implemented yet -- see the roadmap in the
 //! project plan. Typed text (including Ctrl-chars), non-text keys (arrows,
@@ -13,6 +17,7 @@ const std = @import("std");
 const objc = @import("objc");
 const ghc = @import("../ghostty/c.zig").c;
 const appkit = @import("appkit.zig");
+const gcd = @import("../gcd.zig");
 
 const NSEventModifierFlagCapsLock: u64 = 1 << 16;
 const NSEventModifierFlagShift: u64 = 1 << 17;
@@ -94,6 +99,20 @@ pub const TerminalSurface = struct {
             return error.GhosttySurfaceNewFailed;
 
         self.* = .{ .view = view, .surface = surface, .last_frame = frame, .owner = owner };
+
+        // A window that merely moves between screens doesn't reliably get a
+        // `viewDidChangeBackingProperties` (Ghostty issue #2731), so watch for
+        // the screen change and re-sync the backing explicitly. The same
+        // notification carries the screen whose display ID libghostty wants
+        // (for vsync / refresh-rate matching).
+        appkit.class("NSNotificationCenter")
+            .msgSend(objc.Object, "defaultCenter", .{})
+            .msgSend(void, "addObserver:selector:name:object:", .{
+            view,
+            objc.sel("windowDidChangeScreen:"),
+            appkit.nsString("NSWindowDidChangeScreenNotification"),
+            @as(?*anyopaque, null),
+        });
         return self;
     }
 
@@ -118,6 +137,12 @@ pub const TerminalSurface = struct {
     /// positioned-add -- so releasing the alloc-time +1 here is the final
     /// release and deallocs it.
     pub fn destroy(self: *TerminalSurface, allocator: std.mem.Allocator) void {
+        // The center holds the view unretained; drop the registration before
+        // the final release so a late screen-change notification can't be
+        // delivered to a dangling object.
+        appkit.class("NSNotificationCenter")
+            .msgSend(objc.Object, "defaultCenter", .{})
+            .msgSend(void, "removeObserver:", .{self.view});
         ghc.ghostty_surface_free(self.surface);
         self.view.msgSend(void, "release", .{});
         allocator.destroy(self);
@@ -136,6 +161,7 @@ pub const TerminalSurface = struct {
         std.debug.assert(cls.addMethod("keyUp:", keyUp));
         std.debug.assert(cls.addMethod("setFrameSize:", setFrameSize));
         std.debug.assert(cls.addMethod("viewDidChangeBackingProperties", viewDidChangeBackingProperties));
+        std.debug.assert(cls.addMethod("windowDidChangeScreen:", windowDidChangeScreen));
         std.debug.assert(cls.addMethod("updateTrackingAreas", updateTrackingAreas));
         std.debug.assert(cls.addMethod("mouseDown:", mouseDown));
         std.debug.assert(cls.addMethod("mouseUp:", mouseUp));
@@ -177,13 +203,30 @@ pub const TerminalSurface = struct {
     }
 
     fn syncSize(self: *TerminalSurface) void {
+        const bounds = self.view.msgSend(appkit.NSRect, "bounds", .{});
+        // Once attached, derive the scale from the actual backing rect -- it
+        // reflects the window's current screen, so it can't disagree with the
+        // size we send. Before attachment (mid-construction) there is no
+        // window to ask; fall back to the screen scale as before.
+        const window = self.view.msgSend(objc.Object, "window", .{});
+        if (window.value != null) {
+            const backing = self.view.msgSend(appkit.NSRect, "convertRectToBacking:", .{bounds});
+            const x_scale = if (bounds.size.width > 0) backing.size.width / bounds.size.width else 1;
+            const y_scale = if (bounds.size.height > 0) backing.size.height / bounds.size.height else 1;
+            ghc.ghostty_surface_set_content_scale(self.surface, x_scale, y_scale);
+            ghc.ghostty_surface_set_size(
+                self.surface,
+                @intFromFloat(@max(backing.size.width, 1)),
+                @intFromFloat(@max(backing.size.height, 1)),
+            );
+            return;
+        }
         const scale = backingScale(self.view);
-        const size = self.view.msgSend(appkit.NSRect, "bounds", .{}).size;
         ghc.ghostty_surface_set_content_scale(self.surface, scale, scale);
         ghc.ghostty_surface_set_size(
             self.surface,
-            @intFromFloat(size.width * scale),
-            @intFromFloat(size.height * scale),
+            @intFromFloat(@max(bounds.size.width * scale, 1)),
+            @intFromFloat(@max(bounds.size.height * scale, 1)),
         );
     }
 
@@ -194,10 +237,65 @@ pub const TerminalSurface = struct {
         syncSize(selfOf(id));
     }
 
+    /// Keeps the surface's render scale in step with the window's backing
+    /// scale. Core Animation composites a layer using its `contentsScale`;
+    /// left at the old display's value, the Metal contents get scaled by the
+    /// compositor and the terminal appears blown up or shrunk. libghostty
+    /// manages the rendering resolution, so the layer scale is ours to set.
+    fn updateBacking(self: *TerminalSurface) void {
+        const window = self.view.msgSend(objc.Object, "window", .{});
+        if (window.value != null) {
+            setLayerContentsScale(self.view, window.msgSend(f64, "backingScaleFactor", .{}));
+        }
+        syncSize(self);
+    }
+
+    fn setLayerContentsScale(view: objc.Object, scale: f64) void {
+        const layer = view.msgSend(objc.Object, "layer", .{});
+        if (layer.value == null) return;
+        const transaction = objc.getClass("CATransaction") orelse return;
+        transaction.msgSend(void, "begin", .{});
+        // Disable the implicit contentsScale animation; it looks like a
+        // jarring zoom of the terminal contents.
+        transaction.msgSend(void, "setDisableActions:", .{true});
+        layer.msgSend(void, "setContentsScale:", .{scale});
+        transaction.msgSend(void, "commit", .{});
+    }
+
     fn viewDidChangeBackingProperties(id: objc.c.id, sel: objc.c.SEL) callconv(.c) void {
         const obj = objc.Object{ .value = id };
         obj.msgSendSuper(appkit.class("NSView"), void, objc.Sel{ .value = sel }, .{});
-        syncSize(selfOf(id));
+        updateBacking(selfOf(id));
+    }
+
+    /// A window that only moves screens may not get a backing-properties
+    /// change (Ghostty issue #2731), so re-sync from the screen notification
+    /// too. Deferred to the next main-queue turn: AppKit hasn't necessarily
+    /// installed the new screen's backing scale by the time the notification
+    /// fires.
+    fn windowDidChangeScreen(id: objc.c.id, _: objc.c.SEL, note: objc.c.id) callconv(.c) void {
+        const self = selfOf(id);
+        const window = self.view.msgSend(objc.Object, "window", .{});
+        if (window.value == null) return;
+        if ((objc.Object{ .value = note }).msgSend(objc.Object, "object", .{}).value != window.value) return;
+
+        const screen = window.msgSend(objc.Object, "screen", .{});
+        if (screen.value != null) ghc.ghostty_surface_set_display_id(self.surface, displayId(screen));
+        gcd.dispatch_async_f(&gcd._dispatch_main_q, self, resyncBacking);
+    }
+
+    fn resyncBacking(ctx: ?*anyopaque) callconv(.c) void {
+        const self: *TerminalSurface = @ptrCast(@alignCast(ctx orelse return));
+        updateBacking(self);
+    }
+
+    /// `NSScreen`'s CoreGraphics display ID: `deviceDescription[NSScreenNumber]`.
+    fn displayId(screen: objc.Object) u32 {
+        const desc = screen.msgSend(objc.Object, "deviceDescription", .{});
+        if (desc.value == null) return 0;
+        const number = desc.msgSend(objc.Object, "objectForKey:", .{appkit.nsString("NSScreenNumber")});
+        if (number.value == null) return 0;
+        return number.msgSend(u32, "unsignedIntValue", .{});
     }
 
     /// One tracking area covering the visible rect so `mouseMoved:` fires
