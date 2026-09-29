@@ -972,7 +972,7 @@ pub const Window = struct {
                 return true;
             },
             ghc.GHOSTTY_ACTION_RING_BELL => {
-                appkit.class("NSSound").msgSend(void, "beep", .{});
+                appkit.NSBeep();
                 return true;
             },
             ghc.GHOSTTY_ACTION_TOGGLE_FULLSCREEN => {

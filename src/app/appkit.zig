@@ -10,6 +10,11 @@
 const objc = @import("objc");
 const theme = @import("../ui/theme.zig");
 
+/// AppKit's system alert sound. This is a plain C function, not an
+/// `NSSound` class method -- `+[NSSound beep]` does not exist and throws
+/// `NSInvalidArgumentException` if messaged.
+pub extern "c" fn NSBeep() void;
+
 pub const NSPoint = extern struct { x: f64, y: f64 };
 pub const NSSize = extern struct { width: f64, height: f64 };
 pub const NSRect = extern struct { origin: NSPoint, size: NSSize };
