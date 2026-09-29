@@ -115,8 +115,16 @@ fn renameCommit(_: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) voi
     if (handling_end) return; // see `handling_end`
     const f = objc.Object{ .value = sender };
     const tag = f.msgSend(i64, "tag", .{});
-    if (tag < 0) return;
-    const str = f.msgSend(objc.Object, "stringValue", .{});
-    const cstr = str.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return;
-    if (commit_cb) |cb| cb(@intCast(tag), std.mem.span(cstr));
+    if (tag >= 0) {
+        const str = f.msgSend(objc.Object, "stringValue", .{});
+        if (str.msgSend(?[*:0]const u8, "UTF8String", .{})) |cstr| {
+            // Commit before tearing down: `cb` copies the text it keeps, and
+            // `end` may free the field's string out from under `cstr`.
+            if (commit_cb) |cb| cb(@intCast(tag), std.mem.span(cstr));
+        }
+    }
+    // Return (or losing first responder) fires this action, but AppKit only
+    // ends editing -- it doesn't remove our overlay field. Tear it down here,
+    // the same as cancel, or the edit appears never to finish.
+    end();
 }

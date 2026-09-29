@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Committing a tab rename with Return (or by clicking away) now dismisses the
+  inline edit field. The rename was applied, but the overlay stayed up until
+  something else changed the tab list, making it look as though Enter did
+  nothing.
+
 ## [0.1.1] - 2026-09-28
 
 ### Fixed
