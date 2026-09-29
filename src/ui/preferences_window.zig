@@ -376,7 +376,13 @@ fn changed(_: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) void {
     var value: prefs.Value = undefined;
     switch (setting.kind) {
         .toggle => value = .{ .on = control.msgSend(i64, "state", .{}) != 0 },
-        .choice => value = .{ .index = @intCast(control.msgSend(i64, "selectedSegment", .{})) },
+        .choice => {
+            // selectedSegment is -1 when nothing is selected; never cast
+            // that into the unsigned index.
+            const selected = control.msgSend(i64, "selectedSegment", .{});
+            if (selected < 0) return;
+            value = .{ .index = @intCast(selected) };
+        },
         .slider, .stepper => |range| {
             // Snap to the step so 0.8500001 never reaches the config file.
             const raw = control.msgSend(f64, "doubleValue", .{});
