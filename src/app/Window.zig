@@ -110,6 +110,11 @@ pub const Window = struct {
     /// resolve "which window is this event/click for" against this list;
     /// `windowWillClose` removes a window when it closes.
     pub var all: std.ArrayList(*Window) = .empty;
+    /// The most recent main window to hold key focus. `keyWindow()` refreshes
+    /// it; `mainWindow()` falls back to it when a non-main window (e.g.
+    /// Preferences) is key. Validated against `all` before use, so a closed
+    /// window is never returned.
+    var last_key: ?*Window = null;
     /// The one `ghostty_app_t`, shared by every window (set on the first
     /// `create`). App-wide operations (`settings.apply`, theme changes)
     /// key off this instead of any particular window's `.app`.
@@ -234,16 +239,36 @@ pub const Window = struct {
 
     /// The window `NSApp.keyWindow` currently belongs to, or `null` if
     /// none of ours is key (e.g. only Preferences is focused, or no
-    /// window is open at all). App-level actions (the command palette's
-    /// commands, Preferences' "Choose theme…") act on this window.
+    /// window is open at all). App-level UI actions resolve their window
+    /// through `mainWindow` instead, which falls back when this is null.
     pub fn keyWindow() ?*Window {
         const key = appkit.class("NSApplication").msgSend(objc.Object, "sharedApplication", .{})
             .msgSend(objc.Object, "keyWindow", .{});
         if (key.value == null) return null;
         for (all.items) |w| {
-            if (w.window.value == key.value) return w;
+            if (w.window.value == key.value) {
+                last_key = w;
+                return w;
+            }
         }
         return null;
+    }
+
+    /// The main window app-level UI actions should act on: the key main
+    /// window when one is key, otherwise the most recently keyed (or, before
+    /// any has been keyed, the first) main window. Unlike `keyWindow()`, this
+    /// is non-null while a non-main window holds focus -- notably
+    /// Preferences, whose own "Choose theme…"/"Show shortcuts" buttons, and
+    /// View-menu commands invoked while it is focused, still need a main
+    /// window to host their overlay.
+    pub fn mainWindow() ?*Window {
+        if (keyWindow()) |w| return w;
+        if (last_key) |w| {
+            for (all.items) |open| {
+                if (open == w) return w;
+            }
+        }
+        return if (all.items.len > 0) all.items[0] else null;
     }
 
     /// The `*Window` that owns NSWindow `win`, if any (`win` may belong to
@@ -776,7 +801,7 @@ pub const Window = struct {
                 w.show();
                 return;
             }
-            const self = keyWindow() orelse return;
+            const self = mainWindow() orelse return;
             // One modal at a time (overlay.zig's single dismiss callback
             // assumes it): hide the others before showing any overlay.
             switch (action) {
@@ -794,7 +819,7 @@ pub const Window = struct {
                 .new_window => unreachable, // handled above
             }
         } else {
-            const self = keyWindow() orelse return;
+            const self = mainWindow() orelse return;
             _ = keybindings.perform(self.tabs.items[self.active].focused.surface, cmd);
         }
     }
@@ -829,9 +854,11 @@ pub const Window = struct {
         self.closeWholeTab(index);
     }
 
-    /// Preferences buttons open screens that live in the key window.
+    /// Preferences' buttons open overlays in the main window. Preferences is
+    /// its own NSWindow and is key while a button is clicked, so `keyWindow`
+    /// finds no main window; `mainWindow` falls back to the last-keyed one.
     fn onPreferencesButton(action: prefs.ButtonAction) void {
-        const self = keyWindow() orelse return;
+        const self = mainWindow() orelse return;
         self.window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
         // One modal at a time -- see runCommand.
         switch (action) {
