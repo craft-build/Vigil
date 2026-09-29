@@ -64,15 +64,16 @@ pub const App = struct {
 
     /// More than one `Window` can exist now, so an action naming a specific
     /// surface is routed to that surface's own window; anything else (no
-    /// surface target -- app-wide actions) falls back to whichever window
-    /// is currently key.
+    /// surface target -- app-wide actions) goes to the key main window, or
+    /// the last-keyed one when a non-main window (Preferences) holds focus --
+    /// see `Window.mainWindow`.
     fn resolveWindow(target: c.ghostty_target_s) ?*Window {
         if (target.tag == c.GHOSTTY_TARGET_SURFACE) {
             if (TerminalSurface.fromHandle(target.target.surface)) |ts| {
                 if (ts.owner) |owner| return @ptrCast(@alignCast(owner));
             }
         }
-        return Window.keyWindow();
+        return Window.mainWindow();
     }
 
     /// Legality hinges on two invariants, both documented in
