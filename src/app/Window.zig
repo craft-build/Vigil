@@ -528,7 +528,7 @@ pub const Window = struct {
         const bounds = self.content.msgSend(appkit.NSRect, "bounds", .{});
         const frame = appkit.rect(0, 0, bounds.size.width, bounds.size.height - chrome.tab_bar_height);
         const surface = try TerminalSurface.create(self.allocator, self.app, frame, inherit, @ptrCast(self));
-        errdefer surface.destroy(self.allocator);
+        errdefer surface.destroy();
         surface.view.msgSend(void, "setAutoresizingMask:", .{@as(u64, 0)}); // laid out manually
         // Below the tab bar so chrome stays on top.
         self.content.msgSend(void, "addSubview:positioned:relativeTo:", .{
@@ -611,7 +611,7 @@ pub const Window = struct {
 
     fn freeSurface(ctx: ?*anyopaque) callconv(.c) void {
         const surface: *TerminalSurface = @ptrCast(@alignCast(ctx orelse return));
-        surface.destroy(std.heap.c_allocator);
+        surface.destroy();
     }
 
     fn select(self: *Window, index: usize) void {
@@ -1084,7 +1084,7 @@ pub const Window = struct {
         const initial_frame = if (placement.new_is_first) halves.first else halves.second;
 
         const new_ts = try TerminalSurface.create(self.allocator, self.app, initial_frame, target.surface, @ptrCast(self));
-        errdefer new_ts.destroy(self.allocator);
+        errdefer new_ts.destroy();
         new_ts.view.msgSend(void, "setAutoresizingMask:", .{@as(u64, 0)});
         self.content.msgSend(void, "addSubview:positioned:relativeTo:", .{
             new_ts.view,

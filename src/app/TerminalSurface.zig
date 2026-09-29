@@ -26,6 +26,9 @@ const NSEventModifierFlagOption: u64 = 1 << 19;
 const NSEventModifierFlagCommand: u64 = 1 << 20;
 
 pub const TerminalSurface = struct {
+    /// The allocator this surface was created with; `destroy` frees with the
+    /// same one rather than assuming a particular global.
+    allocator: std.mem.Allocator,
     view: objc.Object,
     surface: ghc.ghostty_surface_t,
     /// The frame `Window`'s pane layout last placed this surface at, in the
@@ -98,7 +101,7 @@ pub const TerminalSurface = struct {
         const surface = ghc.ghostty_surface_new(app, &cfg) orelse
             return error.GhosttySurfaceNewFailed;
 
-        self.* = .{ .view = view, .surface = surface, .last_frame = frame, .owner = owner };
+        self.* = .{ .allocator = allocator, .view = view, .surface = surface, .last_frame = frame, .owner = owner };
 
         // A window that merely moves between screens doesn't reliably get a
         // `viewDidChangeBackingProperties` (Ghostty issue #2731), so watch for
@@ -147,7 +150,7 @@ pub const TerminalSurface = struct {
     /// via the deferred `freeSurface` dispatch or an error path after a
     /// positioned-add -- so releasing the alloc-time +1 here is the final
     /// release and deallocs it.
-    pub fn destroy(self: *TerminalSurface, allocator: std.mem.Allocator) void {
+    pub fn destroy(self: *TerminalSurface) void {
         // The center holds the view unretained; drop the registration before
         // the final release so a late screen-change notification can't be
         // delivered to a dangling object.
@@ -156,7 +159,7 @@ pub const TerminalSurface = struct {
             .msgSend(void, "removeObserver:", .{self.view});
         ghc.ghostty_surface_free(self.surface);
         self.view.msgSend(void, "release", .{});
-        allocator.destroy(self);
+        self.allocator.destroy(self);
     }
 
     fn viewClass() objc.Class {
